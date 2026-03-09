@@ -10,6 +10,7 @@ factor = 32
 bias = true
 dim_t = 1024
 use_mlp = true
+latent_dim = 0   # overridden to the real value when --variational is active
 
 [diffusion_params]
 num_timesteps = 50
@@ -57,3 +58,20 @@ d_lambda = 1.0
 
 [sample]
 batch_size = 10000
+
+# ---------------------------------------------------------------------------
+# Variational (VA-DDPM) settings — activated via --variational CLI flag
+# ---------------------------------------------------------------------------
+[variational]
+use_variational = false
+latent_dim = 64
+latent_policy = "consistency"   # "consistency" | "fresh" | "prior_only"
+kl_weight = 1.0
+kl_warmup_steps = 5000
+posterior_inputs = "x0"         # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
+
+[variational.recognition_params]
+hidden_dim = 128
+num_layers = 2
+time_embed_dim = 64
+cat_embed_dim = 32

@@ -28,7 +28,7 @@ class PositionalEmbedding(torch.nn.Module):
 
 
 class MLPDiffusion(nn.Module):
-    def __init__(self, d_in, dim_t = 512, use_mlp=True):
+    def __init__(self, d_in, dim_t = 512, use_mlp=True, latent_dim=0):
         super().__init__()
         self.dim_t = dim_t
 
@@ -50,13 +50,23 @@ class MLPDiffusion(nn.Module):
             nn.SiLU(),
             nn.Linear(dim_t, dim_t)
         )
+
+        # Optional latent projection: projects v into dim_t and adds to the
+        # time/noise embedding so that v modulates the entire hidden state.
+        self.latent_proj = nn.Sequential(
+            nn.Linear(latent_dim, dim_t),
+            nn.SiLU(),
+        ) if latent_dim > 0 else None
         
         self.use_mlp = use_mlp
     
-    def forward(self, x, timesteps):
+    def forward(self, x, timesteps, v=None):
         emb = self.map_noise(timesteps)
         emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape) # swap sin/cos
         emb = self.time_embed(emb)
+
+        if v is not None and self.latent_proj is not None:
+            emb = emb + self.latent_proj(v)
     
         x = self.proj(x) + emb
         return self.mlp(x)
@@ -72,7 +82,8 @@ class UniModMLP(nn.Module):
     """
     def __init__(
             self, d_numerical, categories, num_layers, d_token,
-            n_head = 1, factor = 4, bias = True, dim_t=512, use_mlp=True, **kwargs
+            n_head = 1, factor = 4, bias = True, dim_t=512, use_mlp=True,
+            latent_dim=0, **kwargs
         ):
         super().__init__()
         self.d_numerical = d_numerical
@@ -81,17 +92,17 @@ class UniModMLP(nn.Module):
         self.tokenizer = Tokenizer(d_numerical, categories, d_token, bias = bias)
         self.encoder = Transformer(num_layers, d_token, n_head, d_token, factor)
         d_in = d_token * (d_numerical + len(categories))
-        self.mlp = MLPDiffusion(d_in, dim_t=dim_t, use_mlp=use_mlp)
+        self.mlp = MLPDiffusion(d_in, dim_t=dim_t, use_mlp=use_mlp, latent_dim=latent_dim)
         self.decoder = Transformer(num_layers, d_token, n_head, d_token, factor)
         self.detokenizer = Reconstructor(d_numerical, categories, d_token)
         
         self.model = nn.ModuleList([self.tokenizer, self.encoder, self.mlp, self.decoder, self.detokenizer])
 
-    def forward(self, x_num, x_cat, timesteps):
+    def forward(self, x_num, x_cat, timesteps, v=None):
         e = self.tokenizer(x_num, x_cat)
         decoder_input = e[:, 1:, :]        # ignore the first CLS token. 
         y = self.encoder(decoder_input)
-        pred_y = self.mlp(y.reshape(y.shape[0], -1), timesteps)
+        pred_y = self.mlp(y.reshape(y.shape[0], -1), timesteps, v=v)
         pred_e = self.decoder(pred_y.reshape(*y.shape))
         x_num_pred, x_cat_pred = self.detokenizer(pred_e)
         x_cat_pred = torch.cat(x_cat_pred, dim=-1) if len(x_cat_pred)>0 else torch.zeros_like(x_cat).to(x_num_pred.dtype)
@@ -110,7 +121,7 @@ class Precond(nn.Module):
         self.net_conditioning = net_conditioning
         self.denoise_fn_F = denoise_fn
 
-    def forward(self, x_num, x_cat, t, sigma):
+    def forward(self, x_num, x_cat, t, sigma, v=None):
 
         x_num = x_num.to(torch.float32)
 
@@ -129,9 +140,9 @@ class Precond(nn.Module):
 
         x_in = c_in * x_num
         if self.net_conditioning == "sigma":
-            F_x, x_cat_pred = self.denoise_fn_F(x_in, x_cat, c_noise.flatten())
+            F_x, x_cat_pred = self.denoise_fn_F(x_in, x_cat, c_noise.flatten(), v=v)
         elif self.net_conditioning == "t":
-            F_x, x_cat_pred = self.denoise_fn_F(x_in, x_cat, t)
+            F_x, x_cat_pred = self.denoise_fn_F(x_in, x_cat, t, v=v)
 
         assert F_x.dtype == dtype
         D_x = c_skip * x_num + c_out * F_x.to(torch.float32)
@@ -158,10 +169,10 @@ class Model(nn.Module):
         else:
             self.denoise_fn_D = denoise_fn
 
-    def forward(self, x_num, x_cat, t, sigma=None):
+    def forward(self, x_num, x_cat, t, sigma=None, v=None):
         if self.precond:
-            return self.denoise_fn_D(x_num, x_cat, t, sigma)
+            return self.denoise_fn_D(x_num, x_cat, t, sigma, v=v)
         else:
-            return self.denoise_fn_D(x_num, x_cat, t)
+            return self.denoise_fn_D(x_num, x_cat, t, v=v)
 
 

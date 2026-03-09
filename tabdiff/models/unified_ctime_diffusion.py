@@ -31,6 +31,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             noise_schedule_params={},
             sampler_params={},
             device=torch.device('cpu'),
+            # Variational parameters
+            recognition_model=None,
+            latent_dim=0,
+            latent_policy='consistency',
+            kl_weight=1.0,
             **kwargs
         ):
 
@@ -61,6 +66,12 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         self._denoise_fn = denoise_fn
         self.y_only_model = y_only_model
         self.num_timesteps = num_timesteps
+
+        # Variational (VA-DDPM) components
+        self.recognition_model = recognition_model
+        self.latent_dim = latent_dim
+        self.latent_policy = latent_policy
+        self.kl_weight = kl_weight
         self.scheduler = scheduler
         self.cat_scheduler = cat_scheduler
         self.noise_dist = noise_dist
@@ -134,10 +145,20 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             strategy = 'soft'if is_learnable else 'hard'
             x_cat_t, x_cat_t_soft = self.q_xt(x_cat, move_chance, strategy=strategy)
 
+        # --- Variational: sample latent v and compute KL ---
+        v = None
+        kl_loss = torch.zeros(1, device=device)
+        if self.recognition_model is not None:
+            mu, logvar = self.recognition_model(
+                x_num, x_cat, x_num_t, x_cat_t, t.squeeze()
+            )
+            v = self.recognition_model.sample(mu, logvar)
+            kl_loss = self.recognition_model.kl_divergence(mu, logvar).mean()
+
         # Predict orignal data (distribution)
         model_out_num, model_out_cat = self._denoise_fn(   
             x_num_t, x_cat_t_soft,
-            t.squeeze(), sigma=sigma_num
+            t.squeeze(), sigma=sigma_num, v=v
         )
 
         d_loss = torch.zeros((1,)).float()
@@ -149,7 +170,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             logits = self._subs_parameterization(model_out_cat, x_cat_t)    # log normalized probabilities, with the entry mask category being set to -inf
             d_loss = self._absorbed_closs(logits, x_cat, sigma_cat, dsigma_cat)
             
-        return d_loss.mean(), c_loss.mean()
+        return d_loss.mean(), c_loss.mean(), kl_loss
 
     @torch.no_grad()
     def sample(self, num_samples):
@@ -197,15 +218,28 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                 b,
                 len(self.num_classes),
             )
+
+        # Sample latent v once from the prior and reuse across all reverse steps
+        # (consistency mode — matches VA-DDPM's recommended sampling strategy)
+        v = None
+        if self.latent_dim > 0:
+            v = torch.randn(b, self.latent_dim, device=device)
         
         pbar = tqdm(reversed(range(0, self.num_timesteps)), total=self.num_timesteps)
         pbar.set_description(f"Sampling Progress")
-        for i in pbar:                  
+        for i in pbar:
+            # In "fresh" mode a new v is drawn at every step; "consistency"
+            # and default reuse the v sampled above.
+            v_step = v
+            if self.latent_dim > 0 and self.latent_policy == 'fresh':
+                v_step = torch.randn(b, self.latent_dim, device=device)
+
             z_norm, z_cat, q_xs = self.edm_update(
                 z_norm, z_cat, i, 
                 t[i], t[i-1] if i > 0 else None, t_hat[i],
                 sigma_num_cur[i], sigma_num_next[i], sigma_num_hat[i], 
                 sigma_cat_cur[i], sigma_cat_next[i], sigma_cat_hat[i],
+                v=v_step,
             )
         
         assert torch.all(z_cat < self.mask_index)
@@ -402,7 +436,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             self, x_num_cur, x_cat_cur, i, 
             t_cur, t_next, t_hat,
             sigma_num_cur, sigma_num_next, sigma_num_hat, 
-            sigma_cat_cur, sigma_cat_next, sigma_cat_hat, 
+            sigma_cat_cur, sigma_cat_next, sigma_cat_hat,
+            v=None,
         ):
         """
         i = T-1,...,0
@@ -422,7 +457,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         x_cat_hat_oh = self.to_one_hot(x_cat_hat).to(x_num_hat.dtype) if has_cat else x_cat_hat
         denoised, raw_logits = self._denoise_fn(
             x_num_hat.float(), x_cat_hat_oh,
-            t_hat.squeeze().repeat(b), sigma=sigma_num_hat.unsqueeze(0).repeat(b,1)  # sigma accepts (bs, K_num)
+            t_hat.squeeze().repeat(b), sigma=sigma_num_hat.unsqueeze(0).repeat(b,1),  # sigma accepts (bs, K_num)
+            v=v,
         )
         
         # Apply cfg updates, if is in cfg mode
@@ -473,7 +509,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                 x_cat_hat_oh = self.to_one_hot(x_cat_hat).to(x_num_next.dtype) if has_cat else x_cat_hat
                 denoised, raw_logits = self._denoise_fn(
                     x_num_next.float(), x_cat_hat_oh,
-                    t_next.squeeze().repeat(b), sigma=sigma_num_next.unsqueeze(0).repeat(b,1)
+                    t_next.squeeze().repeat(b), sigma=sigma_num_next.unsqueeze(0).repeat(b,1),
+                    v=v,
                 )
                 if cfg:
                     if not is_learnable:
@@ -509,6 +546,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         b = x_num.size(0)
         device = self.device
         dtype = torch.float32
+        
+        # Sample latent v once for the full imputation run (consistency mode)
+        v = None
+        if self.latent_dim > 0:
+            v = torch.randn(b, self.latent_dim, device=device)
 
         # Create masks, true for the missing columns
         num_mask = [i in num_mask_idx for i in range(self.num_numerical_features)]
@@ -582,6 +624,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                     t[i], t[i-1] if i > 0 else None, t_hat[i],
                     sigma_num_cur[i], sigma_num_next[i], sigma_num_hat[i], 
                     sigma_cat_cur[i], sigma_cat_next[i], sigma_cat_hat[i],
+                    v=v,
                 )
                 z_norm = (1 - num_mask)  * z_norm_known + num_mask * z_norm_unknown
                 z_cat = (1 - cat_mask) * z_cat_known + cat_mask * z_cat_unknown

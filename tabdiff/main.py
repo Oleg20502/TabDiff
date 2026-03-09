@@ -8,6 +8,7 @@ import numpy as np
 from tabdiff.metrics import TabMetrics
 from tabdiff.modules.main_modules import UniModMLP
 from tabdiff.modules.main_modules import Model
+from tabdiff.modules.recognition import RecognitionModel
 from tabdiff.models.unified_ctime_diffusion import UnifiedCtimeDiffusion
 from tabdiff.trainer import Trainer
 import src
@@ -42,11 +43,15 @@ def main(args):
     
     ## Set up flags
     is_dcr = 'dcr' in dataname
+    # Ensure backward compat when args comes from a caller that doesn't set --variational
+    if not hasattr(args, 'variational'):
+        args.variational = False
 
     ## Set experiment name
     exp_name = args.exp_name
     if args.exp_name is None:
         exp_name = 'non_learnable_schedule' if args.non_learnable_schedule else 'learnable_schedule'
+    exp_name += '_variational' if args.variational else ''
     exp_name += '_y_only' if args.y_only else ''
     
     ## Load configs
@@ -157,6 +162,11 @@ def main(args):
     ## Load the module and models
     raw_config['unimodmlp_params']['d_numerical'] = d_numerical
     raw_config['unimodmlp_params']['categories'] = (categories+1).tolist()  # add one for the mask category
+
+    # Propagate latent_dim to backbone config before the backbone is built
+    var_cfg = raw_config.get('variational', {})
+    if args.variational and var_cfg.get('use_variational', True):
+        raw_config['unimodmlp_params']['latent_dim'] = var_cfg['latent_dim']
     if args.y_only:
         raw_config['unimodmlp_params']['use_mlp'] = False     # drop the mlp when training the unconditional model
         raw_config['unimodmlp_params']['dim_t'] = 128   #reduce the size of the mlp
@@ -212,6 +222,20 @@ def main(args):
     if not args.y_only and not args.non_learnable_schedule:
         raw_config['diffusion_params']['scheduler'] = 'power_mean_per_column'
         raw_config['diffusion_params']['cat_scheduler'] = 'log_linear_per_column'
+
+    ## Build optional recognition model (variational mode)
+    recognition_model = None
+    if args.variational and var_cfg.get('use_variational', True):
+        rec_params = var_cfg.get('recognition_params', {})
+        recognition_model = RecognitionModel(
+            num_numerical_features=d_numerical,
+            num_classes_per_column=categories.tolist(),   # original class counts (without mask token)
+            latent_dim=var_cfg['latent_dim'],
+            posterior_inputs=var_cfg.get('posterior_inputs', 'x0'),
+            **rec_params,
+        )
+        recognition_model.to(device)
+    
     diffusion = UnifiedCtimeDiffusion(
         num_classes=categories,
         num_numerical_features=d_numerical,
@@ -219,6 +243,10 @@ def main(args):
         y_only_model=y_only_model,
         **raw_config['diffusion_params'],
         device=device,
+        recognition_model=recognition_model,
+        latent_dim=var_cfg.get('latent_dim', 0) if args.variational else 0,
+        latent_policy=var_cfg.get('latent_policy', 'consistency') if args.variational else 'consistency',
+        kl_weight=var_cfg.get('kl_weight', 1.0) if args.variational else 1.0,
     )
     num_params = sum(p.numel() for p in diffusion.parameters())
     print("The number of parameters = ", num_params)
@@ -255,7 +283,9 @@ def main(args):
         result_save_path=raw_config['result_save_path'],
         device=device,
         ckpt_path=ckpt_path,
-        y_only=args.y_only
+        y_only=args.y_only,
+        kl_weight=var_cfg.get('kl_weight', 1.0) if args.variational else 1.0,
+        kl_warmup_steps=var_cfg.get('kl_warmup_steps', 5000) if args.variational else 0,
     )
     if args.mode == 'test':
         if args.report:
@@ -290,6 +320,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--dataname', type=str, default='adult', help='Name of dataset.')
     parser.add_argument('--gpu', type=int, default=0, help='GPU index.')
+    parser.add_argument('--variational', action='store_true', help='Enable VA-DDPM variational approach')
 
     args = parser.parse_args()
 

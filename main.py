@@ -18,6 +18,7 @@ if __name__ == '__main__':
     # Configs for tabdiff
     parser.add_argument('--y_only', action='store_true', help='Train guidance model that only model the target column')
     parser.add_argument('--non_learnable_schedule', action='store_true', help='disable learnable noise schedule')
+    parser.add_argument('--variational', action='store_true', help='Enable VA-DDPM variational approach: trains a recognition model that produces a latent variable v conditioning the denoiser')
     
     # Configs for testing tabdiff
     parser.add_argument('--num_samples_to_generate', type=int, default=None, help='Number of samples to be generated while testing')

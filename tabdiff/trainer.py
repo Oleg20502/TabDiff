@@ -36,6 +36,9 @@ class Trainer:
             device=torch.device('cuda:1'),
             ckpt_path = None,
             y_only=False,
+            # Variational parameters
+            kl_weight=1.0,
+            kl_warmup_steps=5000,
             **kwargs
     ):
         self.y_only = y_only
@@ -50,6 +53,13 @@ class Trainer:
         for param in self.ema_cat_schedule.parameters():
             param.detach_()
 
+        # EMA for recognition model (only when variational mode is active)
+        self.ema_recognition = None
+        if self.diffusion.recognition_model is not None:
+            self.ema_recognition = deepcopy(self.diffusion.recognition_model)
+            for param in self.ema_recognition.parameters():
+                param.detach_()
+
         self.train_iter = train_iter
         self.dataset = dataset
         self.test_dataset = test_dataset
@@ -59,6 +69,8 @@ class Trainer:
         self.ema_decay = ema_decay
         self.lr_scheduler = lr_scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=factor, patience=reduce_lr_patience, verbose=True)
+        self.kl_weight = kl_weight
+        self.kl_warmup_steps = kl_warmup_steps
         self.closs_weight_schedule = closs_weight_schedule
         self.c_lambda = c_lambda
         self.d_lambda = d_lambda
@@ -78,7 +90,9 @@ class Trainer:
             state_dicts = torch.load(self.ckpt_path, map_location=self.device)
             self.diffusion._denoise_fn.load_state_dict(state_dicts['denoise_fn'])
             self.diffusion.num_schedule.load_state_dict(state_dicts['num_schedule'])
-            self.diffusion.cat_schedule.load_state_dict(state_dicts['cat_schedule'])   
+            self.diffusion.cat_schedule.load_state_dict(state_dicts['cat_schedule'])
+            if 'recognition_model' in state_dicts and self.diffusion.recognition_model is not None:
+                self.diffusion.recognition_model.load_state_dict(state_dicts['recognition_model'])
             print(f"Weights are loaded from {self.ckpt_path}")     
         
         self.curr_epoch = int(os.path.basename(self.ckpt_path).split('_')[-1].split('.')[0]) if self.ckpt_path is not None else 0
@@ -89,37 +103,46 @@ class Trainer:
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
-    def _run_step(self, x, closs_weight, dloss_weight):
+    def _get_kl_weight(self, epoch: int) -> float:
+        """Linear KL warmup: ramps from 0 → kl_weight over kl_warmup_steps epochs."""
+        if self.kl_warmup_steps <= 0:
+            return self.kl_weight
+        return self.kl_weight * min(1.0, epoch / self.kl_warmup_steps)
+
+    def _run_step(self, x, closs_weight, dloss_weight, kl_weight_cur):
         x = x.to(self.device)
         
         self.diffusion.train()
 
         self.optimizer.zero_grad()
 
-        dloss, closs = self.diffusion.mixed_loss(x)
+        dloss, closs, kl_loss = self.diffusion.mixed_loss(x)
 
-        loss = dloss_weight * dloss + closs_weight * closs
+        loss = dloss_weight * dloss + closs_weight * closs + kl_weight_cur * kl_loss
         loss.backward()
         self.optimizer.step()
 
-        return dloss, closs
+        return dloss, closs, kl_loss
     
     def compute_loss(self):      # eval loss is not weighted
         curr_dloss = 0.0
         curr_closs = 0.0
+        curr_klloss = 0.0
         curr_count = 0
         data_iter = self.train_iter
         for batch in data_iter:
             x = batch.float().to(self.device)
             self.diffusion.eval()
             with torch.no_grad():
-                batch_dloss, batch_closs = self.diffusion.mixed_loss(x)
+                batch_dloss, batch_closs, batch_klloss = self.diffusion.mixed_loss(x)
             curr_dloss += batch_dloss.item() * len(x)
             curr_closs += batch_closs.item() * len(x)
+            curr_klloss += batch_klloss.item() * len(x)
             curr_count += len(x)
         mloss = np.around(curr_dloss / curr_count, 4)
         gloss = np.around(curr_closs / curr_count, 4)
-        return mloss, gloss
+        klloss = np.around(curr_klloss / curr_count, 4)
+        return mloss, gloss, klloss
     
     def run_loop(self):
         patience = 0
@@ -151,21 +174,27 @@ class Trainer:
             else:
                 raise NotImplementedError(f"The continuous loss weight schedule {self.closs_weight_schedule} is not implemneted")
 
+            # KL weight with linear warmup
+            kl_weight_cur = self._get_kl_weight(epoch)
+
             # Training Step
             curr_dloss = 0.0
             curr_closs = 0.0
+            curr_klloss = 0.0
             curr_count = 0
             curr_lr = self.optimizer.param_groups[0]['lr']
             for batch in pbar:
                 x = batch.float().to(self.device)
-                batch_dloss, batch_closs = self._run_step(x, closs_weight, dloss_weight)
+                batch_dloss, batch_closs, batch_klloss = self._run_step(x, closs_weight, dloss_weight, kl_weight_cur)
                 curr_dloss += batch_dloss.item() * len(x)
                 curr_closs += batch_closs.item() * len(x)
+                curr_klloss += batch_klloss.item() * len(x)
                 curr_count += len(x)
                 pbar.set_postfix({
                     "lr": curr_lr,
                     "DLoss": np.around(curr_dloss/curr_count, 4),
                     "CLoss": np.around(curr_closs/curr_count, 4),
+                    "KLLoss": np.around(curr_klloss/curr_count, 4),
                     "TotalLoss": np.around((curr_dloss + curr_closs)/curr_count, 4),
                     "closs_weight": closs_weight,
                     "dloss_weight": dloss_weight,
@@ -175,6 +204,7 @@ class Trainer:
             log_dict = {}
             mloss = np.around(curr_dloss / curr_count, 4)
             gloss = np.around(curr_closs / curr_count, 4)
+            klloss = np.around(curr_klloss / curr_count, 4)
             total_loss = mloss + gloss
             if np.isnan(gloss):
                     print('Finding Nan in gaussian loss')
@@ -184,8 +214,10 @@ class Trainer:
                 "lr": curr_lr,
                 "closs_weight": closs_weight,
                 "dloss_weight": dloss_weight,
+                "kl_weight": kl_weight_cur,
                 "loss/c_loss": gloss,
                 "loss/d_loss": mloss,
+                "loss/kl_loss": klloss,
                 "loss/total_loss": total_loss
             }
             log_dict.update(loss_dict)
@@ -222,6 +254,8 @@ class Trainer:
             update_ema(self.ema_model.parameters(), self.diffusion._denoise_fn.parameters(), rate=self.ema_decay)
             update_ema(self.ema_num_schedule.parameters(), self.diffusion.num_schedule.parameters(), rate=self.ema_decay)
             update_ema(self.ema_cat_schedule.parameters(), self.diffusion.cat_schedule.parameters(), rate=self.ema_decay)
+            if self.ema_recognition is not None:
+                update_ema(self.ema_recognition.parameters(), self.diffusion.recognition_model.parameters(), rate=self.ema_decay)
 
             # Save ckpt base on the best training loss
             if total_loss < best_loss and self.curr_epoch > 4000:
@@ -234,19 +268,22 @@ class Trainer:
                     'num_schedule':self.diffusion.num_schedule.state_dict(), 
                     'cat_schedule': self.diffusion.cat_schedule.state_dict(),
                 }
+                if self.diffusion.recognition_model is not None:
+                    state_dicts['recognition_model'] = self.diffusion.recognition_model.state_dict()
                 torch.save(state_dicts, os.path.join(self.model_save_path, f'best_model_{np.round(total_loss,4)}_{epoch+1}.pt'))
                 patience = 0
             else:
                 patience += 1   # increment patience if best loss is not surpassed
             
             # Compute and log EMA model loss
-            curr_model, curr_num_schedule, curr_cat_schedule = self.to_ema_model()
-            ema_mloss, ema_gloss = self.compute_loss()
-            self.to_model(curr_model, curr_num_schedule, curr_cat_schedule)
+            curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition = self.to_ema_model()
+            ema_mloss, ema_gloss, ema_klloss = self.compute_loss()
+            self.to_model(curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition)
             ema_total_loss = ema_mloss + ema_gloss
             ema_loss_dict = {
                 "ema_loss/c_loss": ema_gloss,
                 "ema_loss/d_loss": ema_mloss,
+                "ema_loss/kl_loss": ema_klloss,
                 "ema_loss/total_loss": ema_total_loss
             }
             
@@ -261,6 +298,8 @@ class Trainer:
                     'num_schedule':self.ema_num_schedule.state_dict(), 
                     'cat_schedule': self.ema_cat_schedule.state_dict(),
                 }
+                if self.ema_recognition is not None:
+                    state_dicts['recognition_model'] = self.ema_recognition.state_dict()
                 torch.save(state_dicts, os.path.join(self.model_save_path, f'best_ema_model_{np.round(ema_total_loss,4)}_{epoch+1}.pt'))
             
             # Evaluate Sample Quality
@@ -270,6 +309,8 @@ class Trainer:
                     'num_schedule':self.diffusion.num_schedule.state_dict(), 
                     'cat_schedule': self.diffusion.cat_schedule.state_dict(),
                 }
+                if self.diffusion.recognition_model is not None:
+                    state_dicts['recognition_model'] = self.diffusion.recognition_model.state_dict()
                 torch.save(state_dicts, os.path.join(self.model_save_path, f'model_{epoch+1}.pt'))
                 
                 print_with_bar(f"Routine Generation Evaluation every {self.check_val_every}, currently at epoch #{epoch+1}, wiht total_loss={total_loss}.")
@@ -446,7 +487,7 @@ class Trainer:
 
     def sample_synthetic(self, num_samples, keep_nan_samples=True, ema=False):
         if ema:
-            curr_model, curr_num_schedule, curr_cat_schedule = self.to_ema_model()
+            curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition = self.to_ema_model()
         info = self.metrics.info
         
         print_with_bar(f"Starting Sampling, total samples to generate = {num_samples}")
@@ -489,7 +530,7 @@ class Trainer:
         print_with_bar(f"Ending Sampling, totoal sampling time = {end_time - start_time}")
         
         if ema:
-            self.to_model(curr_model, curr_num_schedule, curr_cat_schedule)
+            self.to_model(curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition)
 
         return syn_df
     
@@ -497,16 +538,21 @@ class Trainer:
         curr_model = self.diffusion._denoise_fn
         curr_num_schedule = self.diffusion.num_schedule
         curr_cat_schedule = self.diffusion.cat_schedule
+        curr_recognition = self.diffusion.recognition_model
         self.diffusion._denoise_fn = self.ema_model  # temporarily install the ema parameters into the model
         self.diffusion.num_schedule = self.ema_num_schedule
         self.diffusion.cat_schedule = self.ema_cat_schedule
+        if self.ema_recognition is not None:
+            self.diffusion.recognition_model = self.ema_recognition
         
-        return curr_model, curr_num_schedule, curr_cat_schedule
+        return curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition
 
-    def to_model(self, curr_model, curr_num_schedule, curr_cat_schedule):
+    def to_model(self, curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition=None):
         self.diffusion._denoise_fn = curr_model      # give back the parameters
         self.diffusion.num_schedule = curr_num_schedule
         self.diffusion.cat_schedule = curr_cat_schedule
+        if curr_recognition is not None:
+            self.diffusion.recognition_model = curr_recognition
         
     def test_impute(self, trail_start, trial_size, resample_rounds, impute_condition, imputed_sample_save_dir, w_num, w_cat):
         self.diffusion.eval()
