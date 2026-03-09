@@ -118,6 +118,11 @@ Wanb logging is enabled by default. To disable it and log locally, add the ```--
 
 To disable the learnable noise schedules, add the ```--non_learnable_schedule```. Please note that in order for the code to test/sample from such model properly, you need to add this flag for all commands below.
 
+To train with V-DDPM parameterization
+```
+python main.py --dataname adult --mode train --variational
+```
+
 To specify your own experiment name, which will be used for logging and saving files, add ```--exp_name <your experiment name>```. This flag overwrites the default experiment name (learnable_schedule/non_learnable_schedule), so, similar to ```--non_learnable_schedule```, once added to training, you need to add it to all following commands as well.
 
 ## Sampling and Evaluating TabDiff (Density, MLE, C2ST)
