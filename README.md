@@ -114,7 +114,7 @@ python main.py --dataname <NAME_OF_DATASET> --mode train
 
 Current Options of ```<NAME_OF_DATASET>``` are: adult, default, shoppers, magic, beijing, news
 
-Wanb logging is enabled by default. To disable it and log locally, add the ```--no_wandb``` flag.
+Experiment logging (Weights & Biases, TensorBoard, or none) is set in ```tabdiff/configs/tabdiff_configs.toml``` under ```[train.main]``` with ```logger = "wandb"```, ```"tensorboard"```, or ```"none"```.
 
 To disable the learnable noise schedules, add the ```--non_learnable_schedule```. Please note that in order for the code to test/sample from such model properly, you need to add this flag for all commands below.
 
@@ -129,7 +129,7 @@ To specify your own experiment name, which will be used for logging and saving f
 
 To sample synthetic tables from trained TabDiff models and evaluate them, run
 ```
-python main.py --dataname <NAME_OF_DATASET> --mode test --report --no_wandb
+python main.py --dataname <NAME_OF_DATASET> --mode test --report
 ```
 
 This will sample 20 synthetic tables randomly. Meanwhile, it will evaluate the density, mle, and c2st scores for each sample and report their average and standard deviation. The results will be printed out in the terminal, and the samples and detailed evaluation results will be placed in ./eval/report_runs/<EXP_NAME>/<NAME_OF_DATASET>/.
@@ -154,7 +154,7 @@ python main.py --dataname <NAME_OF_DATASET>_dcr --mode train
 
 Then, test the models on DCR with the same `_dcr` suffix
 ```
-python main.py --dataname <NAME_OF_DATASET>_dcr --mode test --report --no_wandb
+python main.py --dataname <NAME_OF_DATASET>_dcr --mode test --report
 ```
 
 
@@ -171,7 +171,7 @@ python main.py --dataname <NAME_OF_DATASET> --mode train --y_only
 ### Sampling Imputed Tables
 With the trained guidance model, you can then impute the missing target column by running the testing command with the `--impute` flag
 ```
-python main.py --dataname <NAME_OF_DATASET> --mode test --impute --no_wandb
+python main.py --dataname <NAME_OF_DATASET> --mode test --impute
 ```
 This will, by default, randomly produce 50 imputed tables and save them to ./impute/<NAME_OF_DATASET>/<EXP_NAME>.
 

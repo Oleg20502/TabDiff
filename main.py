@@ -11,8 +11,7 @@ if __name__ == '__main__':
     parser.add_argument('--method', type=str, default='tabdiff', help='Currently we only release our model TabDiff. Baselines will be released soon.')
     parser.add_argument('--gpu', type=int, default=0, help='GPU index')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--no_wandb', action='store_true', help='disable wandb')
-    parser.add_argument('--exp_name', type=str, default=None, help='Experiment name, used to name log directories and the wandb run name')
+    parser.add_argument('--exp_name', type=str, default=None, help='Experiment name, used to name log directories and the experiment logger run name')
     parser.add_argument('--deterministic', action='store_true', help='Whether to make the entire process deterministic, i.e., fix global random seeds')
     
     # Configs for tabdiff

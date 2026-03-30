@@ -3,7 +3,6 @@ from typing import Callable, Union
 from tabdiff.modules.transformer import Reconstructor, Tokenizer, Transformer
 import torch
 import torch.nn as nn
-import torch.optim
 
 ModuleType = Union[str, Callable[..., nn.Module]]
 
@@ -95,12 +94,12 @@ class UniModMLP(nn.Module):
         self.mlp = MLPDiffusion(d_in, dim_t=dim_t, use_mlp=use_mlp, latent_dim=latent_dim)
         self.decoder = Transformer(num_layers, d_token, n_head, d_token, factor)
         self.detokenizer = Reconstructor(d_numerical, categories, d_token)
-        
+        # FIXME: self.model is not used
         self.model = nn.ModuleList([self.tokenizer, self.encoder, self.mlp, self.decoder, self.detokenizer])
 
     def forward(self, x_num, x_cat, timesteps, v=None):
         e = self.tokenizer(x_num, x_cat)
-        decoder_input = e[:, 1:, :]        # ignore the first CLS token. 
+        decoder_input = e[:, 1:, :]        # ignore the first CLS token. # FIXME: no need to add CLS token in Tokenizer
         y = self.encoder(decoder_input)
         pred_y = self.mlp(y.reshape(y.shape[0], -1), timesteps, v=v)
         pred_e = self.decoder(pred_y.reshape(*y.shape))

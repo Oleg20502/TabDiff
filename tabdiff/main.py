@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 import argparse
 import warnings
 
-import wandb
+from tabdiff.experiment_logger import build_experiment_logger
 
 from copy import deepcopy
 
@@ -257,17 +257,33 @@ def main(args):
     printed_configs = json.dumps(raw_config, default=lambda x: int(x) if isinstance(x, np.int64) else x, indent=4)
     print(f"The config of the current run is : \n {printed_configs}")
     
-    ## Enable Wandb
+    ## Experiment logging (wandb, tensorboard, or none) — only from [train.main].logger in tabdiff_configs.toml
     project_name = f"tabdiff_{dataname}"
     raw_config['project_name'] = project_name
-    logger = wandb.init(
-        project=raw_config['project_name'], 
-        name=exp_name,
-        config=raw_config,
-        mode='disabled' if args.debug or args.no_wandb else 'online',
-    )
+    train_main = dict(raw_config['train']['main'])
+    log_backend = train_main.pop('logger', 'wandb')
+    if log_backend not in ('wandb', 'tensorboard', 'none'):
+        raise ValueError(
+            f"Invalid [train.main].logger {log_backend!r} in tabdiff_configs.toml; use 'wandb', 'tensorboard', or 'none'."
+        )
+    if args.debug:
+        log_backend = 'none'
+    raw_config['logger'] = log_backend
 
-    ## Load Trainer
+    tb_log_dir = None
+    if log_backend == 'tensorboard':
+        base = raw_config.get('model_save_path') or raw_config.get('result_save_path')
+        if base is None:
+            base = os.path.join(curr_dir, 'runs', dataname, exp_name)
+            os.makedirs(base, exist_ok=True)
+        tb_log_dir = os.path.join(base, 'tensorboard')
+    logger = build_experiment_logger(
+        log_backend,
+        project_name=project_name,
+        run_name=exp_name,
+        config=raw_config if log_backend == 'wandb' else None,
+        tensorboard_log_dir=tb_log_dir,
+    )
     sample_batch_size = raw_config['sample']['batch_size']
     trainer = Trainer(
         diffusion,
@@ -276,7 +292,7 @@ def main(args):
         val_data,
         metrics,
         logger,
-        **raw_config['train']['main'],
+        **train_main,
         sample_batch_size=sample_batch_size,
         num_samples_to_generate=num_samples_to_generate,
         model_save_path=raw_config['model_save_path'],
@@ -287,31 +303,33 @@ def main(args):
         kl_weight=var_cfg.get('kl_weight', 1.0) if args.variational else 1.0,
         kl_warmup_steps=var_cfg.get('kl_warmup_steps', 5000) if args.variational else 0,
     )
-    if args.mode == 'test':
-        if args.report:
-            if  is_dcr:
-                trainer.report_test_dcr(args.num_runs)
+    try:
+        if args.mode == 'test':
+            if args.report:
+                if  is_dcr:
+                    trainer.report_test_dcr(args.num_runs)
+                else:
+                    trainer.report_test(args.num_runs)
+            elif args.impute:
+                imputed_sample_save_dir = f"impute/{dataname}/{exp_name}"
+                trainer.test_impute(
+                    args.trial_start, args.trial_size,
+                    args.resample_rounds,
+                    args.impute_condition,
+                    imputed_sample_save_dir,
+                    args.w_num,
+                    args.w_cat,
+                )
             else:
-                trainer.report_test(args.num_runs)
-        elif args.impute:
-            imputed_sample_save_dir = f"impute/{dataname}/{exp_name}"
-            trainer.test_impute(
-                args.trial_start, args.trial_size, 
-                args.resample_rounds, 
-                args.impute_condition, 
-                imputed_sample_save_dir,
-                args.w_num,
-                args.w_cat,
-            )
+                trainer.test()
         else:
-            trainer.test()
-    else:
-        ## Save config
-        config_save_path = raw_config['model_save_path']
-        with open (os.path.join(config_save_path, 'config.pkl'), 'wb') as f:
-            pickle.dump(raw_config, f)
-        trainer.run_loop()
-
+            ## Save config
+            config_save_path = raw_config['model_save_path']
+            with open (os.path.join(config_save_path, 'config.pkl'), 'wb') as f:
+                pickle.dump(raw_config, f)
+            trainer.run_loop()
+    finally:
+        logger.finish()
 
 
 if __name__ == '__main__':

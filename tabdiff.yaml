@@ -5,6 +5,9 @@ channels:
   - defaults
 dependencies:
   - python=3.10
+  # MKL 2024.1+ drops iJIT_NotifyEvent; older PyTorch builds then fail at import with
+  # "undefined symbol: iJIT_NotifyEvent" in libtorch_cpu.so (pytorch#123097).
+  - "mkl<2024.1"
   - pytorch=2.0.1
   - torchvision==0.15.2
   - torchaudio==2.0.2
@@ -32,4 +35,5 @@ dependencies:
     - openpyxl
     - xgboost
     - wandb==0.17.3
+    - tensorboard>=2.14.0
     - kaleido

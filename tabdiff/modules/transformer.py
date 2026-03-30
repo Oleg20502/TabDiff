@@ -39,6 +39,7 @@ class Tokenizer(nn.Module):
     def forward(self, x_num, x_cat):
         x_some = x_num if x_cat is None else x_cat
         assert x_some is not None
+         # FIXME: no need to add CLS token in Tokenizer
         x_num = torch.cat(
             [torch.ones(len(x_some), 1, device=x_some.device)]  # [CLS]
             + ([] if x_num is None else [x_num]),
@@ -248,8 +249,8 @@ class Reconstructor(nn.Module):
         h_num  = h[:, :self.d_numerical]
         h_cat  = h[:, self.d_numerical:]
 
-        recon_x_num = torch.mul(h_num, self.weight.unsqueeze(0)).sum(-1)
-        recon_x_cat = []
+        recon_x_num = torch.mul(h_num, self.weight.unsqueeze(0)).sum(-1) # [bs, d_numerical]
+        recon_x_cat = [] # [bs, sum(categories)]
 
         for i, recon in enumerate(self.cat_recons):
       
