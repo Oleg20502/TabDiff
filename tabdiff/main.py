@@ -6,9 +6,12 @@ import random
 
 import numpy as np
 from tabdiff.metrics import TabMetrics
-from tabdiff.modules.main_modules import UniModMLP
 from tabdiff.modules.main_modules import Model
-from tabdiff.modules.recognition import RecognitionModel
+from tabdiff.builders.model_builders import (
+    build_denoiser_backbone,
+    build_recognition_model,
+    ensure_denoiser_config_inplace,
+)
 from tabdiff.models.unified_ctime_diffusion import UnifiedCtimeDiffusion
 from tabdiff.trainer import Trainer
 import src
@@ -191,9 +194,14 @@ def main(args):
                     **main_model_configs['diffusion_params']['noise_schedule_params']
                 )
                 raw_config['diffusion_params']['noise_schedule_params']['k'] = noise_schedule.k()[0].item()    # the target col is placed at the first position
-            
-    backbone = UniModMLP(
-        **raw_config['unimodmlp_params']
+
+    ensure_denoiser_config_inplace(raw_config)
+    latent_d = int(var_cfg.get("latent_dim", 0)) if args.variational else 0
+    backbone = build_denoiser_backbone(
+        raw_config,
+        d_numerical=d_numerical,
+        categories=(categories + 1).tolist(),
+        latent_dim=latent_d,
     )
     model = Model(backbone, **raw_config['diffusion_params']['edm_params'])
     model.to(device)
@@ -210,10 +218,19 @@ def main(args):
         y_only_model_config_path = os.path.join(os.path.dirname(y_only_model_path), 'config.pkl')
         with open(y_only_model_config_path, 'rb') as f:
                 y_only_model_config = pickle.load(f)
-        y_only_model = UniModMLP(
-            **y_only_model_config['unimodmlp_params']
+        ensure_denoiser_config_inplace(y_only_model_config)
+        y_only_latent = int(
+            y_only_model_config.get("variational", {}).get("latent_dim", 0)
         )
-        y_only_model = Model(y_only_model, **y_only_model_config['diffusion_params']['edm_params'])
+        y_only_bb = build_denoiser_backbone(
+            y_only_model_config,
+            d_numerical=d_numerical,
+            categories=(categories + 1).tolist(),
+            latent_dim=y_only_latent,
+        )
+        y_only_model = Model(
+            y_only_bb, **y_only_model_config['diffusion_params']['edm_params']
+        )
         y_only_model.to(device)
         # load weights
         state_dicts = torch.load(y_only_model_path, map_location=device)
@@ -226,13 +243,12 @@ def main(args):
     ## Build optional recognition model (variational mode)
     recognition_model = None
     if args.variational and var_cfg.get('use_variational', True):
-        rec_params = var_cfg.get('recognition_params', {})
-        recognition_model = RecognitionModel(
+        recognition_model = build_recognition_model(
+            var_cfg,
             num_numerical_features=d_numerical,
-            num_classes_per_column=categories.tolist(),   # original class counts (without mask token)
+            num_classes_per_column=categories.tolist(),
             latent_dim=var_cfg['latent_dim'],
             posterior_inputs=var_cfg.get('posterior_inputs', 'x0'),
-            **rec_params,
         )
         recognition_model.to(device)
     

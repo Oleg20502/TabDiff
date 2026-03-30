@@ -12,6 +12,20 @@ dim_t = 1024
 use_mlp = true
 latent_dim = 0   # overridden to the real value when --variational is active
 
+# Denoiser backbone: unimod_mlp | transformer_encoder | mlp
+# Per-backbone tables override [unimodmlp_params] keys when the same name is set.
+[denoiser]
+backbone = "unimod_mlp"
+
+# [denoiser.transformer_encoder]
+# num_layers = 4
+
+# [denoiser.mlp]
+# hidden_dim = 256
+# num_layers = 4
+# time_embed_dim = 64
+# cat_embed_dim = 32
+
 [diffusion_params]
 num_timesteps = 50
 scheduler='power_mean'      # 'power_mean', 'power_mean_unified', 'power_mean_per_column'
@@ -70,9 +84,25 @@ latent_policy = "consistency"   # "consistency" | "fresh" | "prior_only"
 kl_weight = 1.0
 kl_warmup_steps = 5000
 posterior_inputs = "x0"         # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
+recognition_backbone = "mlp"    # mlp | transformer_encoder | unimod_mlp
 
 [variational.recognition_params]
 hidden_dim = 128
 num_layers = 4
 time_embed_dim = 64
 cat_embed_dim = 32
+
+# Optional overrides per recognition backbone (merged on top of recognition_params):
+# [variational.recognition_transformer_encoder]
+# n_tokens = 16
+# d_token = 64
+# n_head = 4
+# factor = 4
+# transformer_layers = 2
+#
+# [variational.recognition_unimod_mlp]
+# d_token = 4
+# unimod_num_layers = 2
+# n_head = 1
+# factor = 32
+# bias = true

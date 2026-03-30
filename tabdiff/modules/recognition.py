@@ -1,57 +1,180 @@
-"""Recognition network for the variational latent variable v.
+"""Recognition network for the variational latent variable v."""
 
-Ports the VA-DDPM RecognitionModel and LatentPolicy into TabDiff's interface.
-Key difference from VA-DDPM: TabDiff categorical columns have K_j original
-classes + 1 mask token at index K_j, so embeddings use vocabulary size K_j+1.
-"""
+from __future__ import annotations
 
-from typing import Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from tabdiff.modules.transformer import Tokenizer, Transformer
+
+
+class RecognitionMLPEncoder(nn.Module):
+    """Stack of Linear / LayerNorm / SiLU (original recognition encoder)."""
+
+    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int):
+        super().__init__()
+        layers: list[nn.Module] = []
+        d = input_dim
+        for _ in range(num_layers):
+            layers.extend(
+                [
+                    nn.Linear(d, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.SiLU(),
+                ]
+            )
+            d = hidden_dim
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class RecognitionTransformerEncoderBody(nn.Module):
+    """Flat pack → pseudo-tokens → Transformer stack → mean pool → hidden_dim."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        n_tokens: int,
+        d_token: int,
+        num_layers: int,
+        n_head: int,
+        factor: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.n_tokens = n_tokens
+        self.d_token = d_token
+        self.proj = nn.Linear(input_dim, n_tokens * d_token)
+        self.encoder = Transformer(
+            num_layers, d_token, n_head, d_token, factor
+        )
+        self.out = nn.Linear(d_token, hidden_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b = x.shape[0]
+        h = self.proj(x).view(b, self.n_tokens, self.d_token)
+        h = self.encoder(h)
+        h = h.mean(dim=1)
+        return self.out(h)
+
+
+class RecognitionUniModBody(nn.Module):
+    """Tokenizer → token sequence → optional time broadcast → Transformer → pool → hidden."""
+
+    def __init__(
+        self,
+        num_numerical_features: int,
+        num_classes_per_column: list,
+        posterior_inputs: str,
+        d_token: int,
+        num_layers: int,
+        n_head: int,
+        factor: int,
+        bias: bool,
+        time_embed_dim: int,
+        hidden_dim: int,
+    ):
+        super().__init__()
+        self.posterior_inputs = posterior_inputs
+        self.vocab_sizes: List[int] = [k + 1 for k in num_classes_per_column]
+        tok_cats = self.vocab_sizes if self.vocab_sizes else None
+        self.tokenizer = Tokenizer(num_numerical_features, tok_cats, d_token, bias)
+        self.encoder = Transformer(
+            num_layers, d_token, n_head, d_token, factor
+        )
+        self.time_embed = (
+            _SinusoidalEmbedding(time_embed_dim)
+            if posterior_inputs != "x0"
+            else None
+        )
+        self.time_to_token = (
+            nn.Linear(time_embed_dim, d_token)
+            if self.time_embed is not None
+            else None
+        )
+        self.out = nn.Linear(d_token, hidden_dim)
+
+    def _seq(self, x_num: torch.Tensor, x_cat: torch.Tensor) -> torch.Tensor:
+        # Tokenizer expects concatenated one-hot (same as denoiser), not int indices.
+        if not self.vocab_sizes:
+            oh = None
+        else:
+            oh = torch.cat(
+                [
+                    F.one_hot(x_cat[:, i].long(), num_classes=self.vocab_sizes[i]).to(
+                        x_num.dtype
+                    )
+                    for i in range(len(self.vocab_sizes))
+                ],
+                dim=-1,
+            )
+        e = self.tokenizer(x_num, oh)
+        return e[:, 1:, :]
+
+    def forward(
+        self,
+        x_num: torch.Tensor,
+        x_cat: torch.Tensor,
+        x_num_t: torch.Tensor,
+        x_cat_t: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.posterior_inputs == "x0_xt_t":
+            h = torch.cat(
+                [self._seq(x_num, x_cat), self._seq(x_num_t, x_cat_t)], dim=1
+            )
+        elif self.posterior_inputs == "xt_t":
+            h = self._seq(x_num_t, x_cat_t)
+        elif self.posterior_inputs == "x0_t":
+            h = self._seq(x_num, x_cat)
+        else:
+            h = self._seq(x_num, x_cat)
+
+        if self.time_embed is not None and self.time_to_token is not None:
+            te = self.time_to_token(self.time_embed(t))
+            h = h + te.unsqueeze(1)
+
+        h = self.encoder(h)
+        return self.out(h.mean(dim=1))
 
 
 class RecognitionModel(nn.Module):
-    """Recognition network r_phi(v | x_num, x_cat).
+    """Recognition network r_phi(v | x_num, x_cat) with pluggable encoder backbone."""
 
-    Produces parameters (mu, logvar) of a diagonal Gaussian posterior over
-    the latent variable v that will condition the denoiser.
-
-    Inputs can be configured via `posterior_inputs`:
-      - "x0"      : clean data only (x_num, x_cat)
-      - "x0_t"    : clean data + time embedding
-      - "xt_t"    : noisy data + time embedding
-      - "x0_xt_t" : clean data + noisy data + time embedding
-    """
+    BACKBONES = frozenset({"mlp", "transformer_encoder", "unimod_mlp"})
 
     def __init__(
         self,
         num_numerical_features: int,
         num_classes_per_column: list,
         latent_dim: int,
-        hidden_dim: int = 128,
-        num_layers: int = 2,
-        time_embed_dim: int = 64,
-        cat_embed_dim: int = 32,
+        backbone: str = "mlp",
+        backbone_params: Optional[Dict] = None,
         posterior_inputs: Literal["x0_xt_t", "xt_t", "x0_t", "x0"] = "x0",
         min_logvar: float = -10.0,
         max_logvar: float = 2.0,
+        **kwargs,
     ):
         """
         Args:
-            num_numerical_features: Number of continuous columns.
-            num_classes_per_column: Original class counts K_j per categorical
-                column (without the mask token).  Embeddings use K_j+1 to
-                accommodate TabDiff's mask token at index K_j.
-            latent_dim: Dimension of latent variable v.
-            hidden_dim: Width of the MLP encoder.
-            num_layers: Depth of the MLP encoder.
-            time_embed_dim: Dimension of the sinusoidal time embedding.
-            cat_embed_dim: Embedding dimension per categorical column.
-            posterior_inputs: Which inputs are fed into the encoder.
-            min_logvar / max_logvar: Clamp range for log-variance.
+            backbone: ``mlp`` (flat MLP on packed features), ``transformer_encoder``
+                (packed vector → token projection → Transformer), ``unimod_mlp``
+                (Tokenizer + Transformer on tabular tokens, no flat pack).
+            backbone_params: Hyperparameters for the chosen backbone (merged with
+                any extra ``**kwargs`` for backward compatibility).
         """
         super().__init__()
+        params = {**(backbone_params or {}), **kwargs}
+        if backbone not in self.BACKBONES:
+            raise ValueError(
+                f"Unknown recognition backbone {backbone!r}; expected one of {sorted(self.BACKBONES)}"
+            )
+        self.backbone_name = backbone
         self.num_numerical_features = num_numerical_features
         self.num_cat_cols = len(num_classes_per_column)
         self.latent_dim = latent_dim
@@ -59,75 +182,107 @@ class RecognitionModel(nn.Module):
         self.min_logvar = min_logvar
         self.max_logvar = max_logvar
 
-        # Each state (x_num or x_num_t) contributes:
-        #   num_numerical_features  (continuous, passed directly)
-        # + num_cat_cols * cat_embed_dim  (categorical embeddings)
-        state_dim = num_numerical_features + self.num_cat_cols * cat_embed_dim
+        hidden_dim = int(params.get("hidden_dim", 128))
+        num_layers = int(params.get("num_layers", 2))
+        time_embed_dim = int(params.get("time_embed_dim", 64))
+        cat_embed_dim = int(params.get("cat_embed_dim", 32))
 
+        state_dim = num_numerical_features + self.num_cat_cols * cat_embed_dim
         if posterior_inputs == "x0_xt_t":
-            input_dim = state_dim * 2 + time_embed_dim
+            flat_dim = state_dim * 2 + time_embed_dim
         elif posterior_inputs in ("xt_t", "x0_t"):
-            input_dim = state_dim + time_embed_dim
+            flat_dim = state_dim + time_embed_dim
         elif posterior_inputs == "x0":
-            input_dim = state_dim
+            flat_dim = state_dim
         else:
             raise ValueError(f"Unknown posterior_inputs: {posterior_inputs}")
 
-        # Sinusoidal time embedding (only built when needed)
         if posterior_inputs != "x0":
             self.time_embed = _SinusoidalEmbedding(time_embed_dim)
         else:
             self.time_embed = None
 
-        # Per-column categorical embeddings.
-        # Vocabulary size = K_j + 1 to cover the mask token at index K_j.
         if num_classes_per_column:
-            self.cat_embeds = nn.ModuleList([
-                nn.Embedding(k + 1, cat_embed_dim)
-                for k in num_classes_per_column
-            ])
+            self.cat_embeds = nn.ModuleList(
+                [
+                    nn.Embedding(k + 1, cat_embed_dim)
+                    for k in num_classes_per_column
+                ]
+            )
         else:
             self.cat_embeds = None
 
-        # MLP encoder
-        layers = []
-        in_dim = input_dim
-        for _ in range(num_layers):
-            layers.extend([
-                nn.Linear(in_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.SiLU(),
-            ])
-            in_dim = hidden_dim
-        self.encoder = nn.Sequential(*layers)
+        if backbone == "mlp":
+            self.body = RecognitionMLPEncoder(flat_dim, hidden_dim, num_layers)
+        elif backbone == "transformer_encoder":
+            n_tokens = int(params.get("n_tokens", 16))
+            d_token = int(params.get("d_token", 64))
+            n_head = int(params.get("n_head", 4))
+            factor = int(params.get("factor", 4))
+            tr_layers = int(params.get("transformer_layers", num_layers))
+            self.body = RecognitionTransformerEncoderBody(
+                flat_dim,
+                n_tokens,
+                d_token,
+                tr_layers,
+                n_head,
+                factor,
+                hidden_dim,
+            )
+        else:
+            d_token = int(params.get("d_token", 4))
+            n_head = int(params.get("n_head", 1))
+            factor = int(params.get("factor", 32))
+            bias = bool(params.get("bias", True))
+            um_layers = int(params.get("unimod_num_layers", num_layers))
+            self.body = RecognitionUniModBody(
+                num_numerical_features,
+                num_classes_per_column,
+                posterior_inputs,
+                d_token,
+                um_layers,
+                n_head,
+                factor,
+                bias,
+                time_embed_dim,
+                hidden_dim,
+            )
 
-        # Output heads
         self.mu_head = nn.Linear(hidden_dim, latent_dim)
         self.logvar_head = nn.Linear(hidden_dim, latent_dim)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _embed_state(self, x_num: torch.Tensor, x_cat: torch.Tensor) -> torch.Tensor:
-        """Embed a single tabular state into a flat vector.
-
-        Args:
-            x_num: Continuous features [B, num_numerical_features]
-            x_cat: Categorical integer indices [B, num_cat_cols]
-
-        Returns:
-            Embedded state [B, state_dim]
-        """
         parts = [x_num] if self.num_numerical_features > 0 else []
         if self.cat_embeds is not None and x_cat.shape[1] > 0:
             for i, embed in enumerate(self.cat_embeds):
-                parts.append(embed(x_cat[:, i]))  # [B, cat_embed_dim]
+                parts.append(embed(x_cat[:, i]))
         return torch.cat(parts, dim=-1) if parts else x_num
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _flat_inputs(
+        self,
+        x_num: torch.Tensor,
+        x_cat: torch.Tensor,
+        x_num_t: torch.Tensor,
+        x_cat_t: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.posterior_inputs == "x0_xt_t":
+            assert self.time_embed is not None
+            t_emb = self.time_embed(t)
+            state_0 = self._embed_state(x_num, x_cat)
+            state_t = self._embed_state(x_num_t, x_cat_t)
+            return torch.cat([state_0, state_t, t_emb], dim=-1)
+        if self.posterior_inputs == "xt_t":
+            assert self.time_embed is not None
+            t_emb = self.time_embed(t)
+            state_t = self._embed_state(x_num_t, x_cat_t)
+            return torch.cat([state_t, t_emb], dim=-1)
+        if self.posterior_inputs == "x0_t":
+            assert self.time_embed is not None
+            t_emb = self.time_embed(t)
+            state_0 = self._embed_state(x_num, x_cat)
+            return torch.cat([state_0, t_emb], dim=-1)
+        return self._embed_state(x_num, x_cat)
 
     def forward(
         self,
@@ -137,86 +292,29 @@ class RecognitionModel(nn.Module):
         x_cat_t: torch.Tensor,
         t: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Compute posterior parameters (mu, logvar).
+        if self.backbone_name == "unimod_mlp":
+            h = self.body(x_num, x_cat, x_num_t, x_cat_t, t)
+        else:
+            inp = self._flat_inputs(x_num, x_cat, x_num_t, x_cat_t, t)
+            h = self.body(inp)
 
-        Args:
-            x_num:   Clean continuous features  [B, num_numerical_features]
-            x_cat:   Clean categorical indices  [B, num_cat_cols]
-            x_num_t: Noisy continuous features  [B, num_numerical_features]
-            x_cat_t: Noisy categorical indices  [B, num_cat_cols]  (may contain mask tokens)
-            t:       Time values                [B]  in [0, 1]
-
-        Returns:
-            mu     [B, latent_dim]
-            logvar [B, latent_dim]
-        """
-        if self.posterior_inputs == "x0_xt_t":
-            t_emb = self.time_embed(t)
-            state_0 = self._embed_state(x_num, x_cat)
-            state_t = self._embed_state(x_num_t, x_cat_t)
-            inputs = torch.cat([state_0, state_t, t_emb], dim=-1)
-        elif self.posterior_inputs == "xt_t":
-            t_emb = self.time_embed(t)
-            state_t = self._embed_state(x_num_t, x_cat_t)
-            inputs = torch.cat([state_t, t_emb], dim=-1)
-        elif self.posterior_inputs == "x0_t":
-            t_emb = self.time_embed(t)
-            state_0 = self._embed_state(x_num, x_cat)
-            inputs = torch.cat([state_0, t_emb], dim=-1)
-        else:  # "x0"
-            inputs = self._embed_state(x_num, x_cat)
-
-        h = self.encoder(inputs)
         mu = self.mu_head(h)
         logvar = self.logvar_head(h)
         logvar = torch.clamp(logvar, self.min_logvar, self.max_logvar)
         return mu, logvar
 
-    def sample(
-        self,
-        mu: torch.Tensor,
-        logvar: torch.Tensor,
-    ) -> torch.Tensor:
-        """Reparameterisation trick: v = mu + exp(0.5*logvar) * eps.
-
-        Args:
-            mu:     [B, latent_dim]
-            logvar: [B, latent_dim]
-
-        Returns:
-            Sampled latent [B, latent_dim]
-        """
+    def sample(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + std * eps
 
-    def kl_divergence(
-        self,
-        mu: torch.Tensor,
-        logvar: torch.Tensor,
-    ) -> torch.Tensor:
-        """KL( N(mu, sigma^2) || N(0,1) ) summed over latent dim.
-
-        Args:
-            mu:     [B, latent_dim]
-            logvar: [B, latent_dim]
-
-        Returns:
-            Per-sample KL [B]
-        """
+    def kl_divergence(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         kl = 0.5 * (mu.pow(2) + logvar.exp() - 1.0 - logvar)
         return kl.sum(dim=-1)
 
 
 class LatentPolicy(nn.Module):
-    """Abstracts how the latent variable v is used during training and sampling.
-
-    Modes:
-      - "shared"     : Recognition model is used during training; prior at sampling.
-      - "prior_only" : Always sample from N(0,I); no KL loss.
-      - "consistency": Like "shared" at training; v sampled once and reused
-                       across all reverse steps at generation time.
-    """
+    """How the latent v is drawn for training and generation."""
 
     def __init__(
         self,
@@ -238,12 +336,6 @@ class LatentPolicy(nn.Module):
         x_cat_t: torch.Tensor,
         t: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample latent for a training step.
-
-        Returns:
-            v   [B, latent_dim]
-            kl  [B]  (zero tensor for prior_only)
-        """
         B, device = x_num.shape[0], x_num.device
         if self.policy_type == "prior_only":
             v = torch.randn(B, self.latent_dim, device=device)
@@ -262,36 +354,29 @@ class LatentPolicy(nn.Module):
         device: torch.device,
         step_idx: int = 0,
     ) -> torch.Tensor:
-        """Sample latent for a generation step.
-
-        In "consistency" mode the same v is reused across all reverse steps
-        (call reset_cache() before each new generation batch).
-        """
         if self.policy_type == "consistency":
             if step_idx == 0 or self._cached_v is None:
-                self._cached_v = torch.randn(batch_size, self.latent_dim, device=device)
+                self._cached_v = torch.randn(
+                    batch_size, self.latent_dim, device=device
+                )
             return self._cached_v
         return torch.randn(batch_size, self.latent_dim, device=device)
 
     def reset_cache(self) -> None:
-        """Reset the cached v (call before starting a new generation batch)."""
         self._cached_v = None
 
 
-# ---------------------------------------------------------------------------
-# Internal: lightweight sinusoidal embedding (no extra dependencies)
-# ---------------------------------------------------------------------------
-
 class _SinusoidalEmbedding(nn.Module):
-    """Fixed sinusoidal positional embedding for the time input t in [0, 1]."""
-
     def __init__(self, embed_dim: int, scale: float = 1000.0):
         super().__init__()
         self.embed_dim = embed_dim
         self.scale = scale
         half = embed_dim // 2
+        if half < 1:
+            half = 1
         freqs = torch.exp(
-            -torch.arange(half, dtype=torch.float32) * (torch.log(torch.tensor(10000.0)) / half)
+            -torch.arange(half, dtype=torch.float32)
+            * (torch.log(torch.tensor(10000.0)) / half)
         )
         self.register_buffer("freqs", freqs)
 
