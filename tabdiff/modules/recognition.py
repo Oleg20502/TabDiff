@@ -33,36 +33,6 @@ class RecognitionMLPEncoder(nn.Module):
         return self.net(x)
 
 
-class RecognitionTransformerEncoderBody(nn.Module):
-    """Flat pack → pseudo-tokens → Transformer stack → mean pool → hidden_dim."""
-
-    def __init__(
-        self,
-        input_dim: int,
-        n_tokens: int,
-        d_token: int,
-        num_layers: int,
-        n_head: int,
-        factor: int,
-        hidden_dim: int,
-    ):
-        super().__init__()
-        self.n_tokens = n_tokens
-        self.d_token = d_token
-        self.proj = nn.Linear(input_dim, n_tokens * d_token)
-        self.encoder = Transformer(
-            num_layers, d_token, n_head, d_token, factor
-        )
-        self.out = nn.Linear(d_token, hidden_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b = x.shape[0]
-        h = self.proj(x).view(b, self.n_tokens, self.d_token)
-        h = self.encoder(h)
-        h = h.mean(dim=1)
-        return self.out(h)
-
-
 class RecognitionUniModBody(nn.Module):
     """Tokenizer → token sequence → optional time broadcast → Transformer → pool → hidden."""
 
@@ -146,7 +116,7 @@ class RecognitionUniModBody(nn.Module):
 class RecognitionModel(nn.Module):
     """Recognition network r_phi(v | x_num, x_cat) with pluggable encoder backbone."""
 
-    BACKBONES = frozenset({"mlp", "transformer_encoder", "unimod_mlp"})
+    BACKBONES = frozenset({"mlp", "unimod_mlp"})
 
     def __init__(
         self,
@@ -162,9 +132,8 @@ class RecognitionModel(nn.Module):
     ):
         """
         Args:
-            backbone: ``mlp`` (flat MLP on packed features), ``transformer_encoder``
-                (packed vector → token projection → Transformer), ``unimod_mlp``
-                (Tokenizer + Transformer on tabular tokens, no flat pack).
+            backbone: ``mlp`` (flat MLP on packed features) or ``unimod_mlp``
+                (Tokenizer + Transformer on tabular tokens).
             backbone_params: Hyperparameters for the chosen backbone (merged with
                 any extra ``**kwargs`` for backward compatibility).
         """
@@ -214,21 +183,6 @@ class RecognitionModel(nn.Module):
 
         if backbone == "mlp":
             self.body = RecognitionMLPEncoder(flat_dim, hidden_dim, num_layers)
-        elif backbone == "transformer_encoder":
-            n_tokens = int(params.get("n_tokens", 16))
-            d_token = int(params.get("d_token", 64))
-            n_head = int(params.get("n_head", 4))
-            factor = int(params.get("factor", 4))
-            tr_layers = int(params.get("transformer_layers", num_layers))
-            self.body = RecognitionTransformerEncoderBody(
-                flat_dim,
-                n_tokens,
-                d_token,
-                tr_layers,
-                n_head,
-                factor,
-                hidden_dim,
-            )
         else:
             d_token = int(params.get("d_token", 4))
             n_head = int(params.get("n_head", 1))

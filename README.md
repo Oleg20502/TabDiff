@@ -118,10 +118,11 @@ Experiment logging (Weights & Biases, TensorBoard, or none) is set in ```tabdi
 
 To disable the learnable noise schedules, add the ```--non_learnable_schedule```. Please note that in order for the code to test/sample from such model properly, you need to add this flag for all commands below.
 
-To train with V-DDPM parameterization
+To train with V-DDPM (variational) parameterization, set `use_variational = true` in the TOML or use the bundled config:
 ```
-python main.py --dataname adult --mode train --variational
+python main.py --dataname adult --mode train --config tabdiff_configs_variational.toml
 ```
+Use the same `--config` when testing so the default checkpoint path (`…/learnable_schedule_variational/…`) matches, or pass `--ckpt_path` explicitly.
 
 To specify your own experiment name, which will be used for logging and saving files, add ```--exp_name <your experiment name>```. This flag overwrites the default experiment name (learnable_schedule/non_learnable_schedule), so, similar to ```--non_learnable_schedule```, once added to training, you need to add it to all following commands as well.
 

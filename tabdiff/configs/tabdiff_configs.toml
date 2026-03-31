@@ -2,6 +2,9 @@
 dequant_dist = "none"
 int_dequant_factor = 0
 
+[denoiser]
+backbone = "unimod_mlp"  # unimod_mlp | transformer_encoder | mlp
+
 [unimodmlp_params]
 num_layers = 2
 d_token = 4
@@ -10,12 +13,7 @@ factor = 32
 bias = true
 dim_t = 1024
 use_mlp = true
-latent_dim = 0   # overridden to the real value when --variational is active
-
-# Denoiser backbone: unimod_mlp | transformer_encoder | mlp
-# Per-backbone tables override [unimodmlp_params] keys when the same name is set.
-[denoiser]
-backbone = "unimod_mlp"
+latent_dim = 0   # overridden from [variational].latent_dim when use_variational = true
 
 # [denoiser.transformer_encoder]
 # num_layers = 4
@@ -75,16 +73,16 @@ d_lambda = 1.0
 batch_size = 10
 
 # ---------------------------------------------------------------------------
-# Variational (VA-DDPM) settings — activated via --variational CLI flag
+# Variational (VA-DDPM). Toggle use_variational only, or use tabdiff_configs_variational.toml
 # ---------------------------------------------------------------------------
 [variational]
 use_variational = false
 latent_dim = 64
 latent_policy = "consistency"   # "consistency" | "fresh" | "prior_only"
 kl_weight = 1.0
-kl_warmup_steps = 5000
-posterior_inputs = "x0"         # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
-recognition_backbone = "mlp"    # mlp | transformer_encoder | unimod_mlp
+kl_warmup_steps = 1000
+posterior_inputs = "x0_xt_t"         # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
+recognition_backbone = "unimod_mlp"  # mlp | unimod_mlp
 
 [variational.recognition_params]
 hidden_dim = 128
@@ -92,14 +90,7 @@ num_layers = 4
 time_embed_dim = 64
 cat_embed_dim = 32
 
-# Optional overrides per recognition backbone (merged on top of recognition_params):
-# [variational.recognition_transformer_encoder]
-# n_tokens = 16
-# d_token = 64
-# n_head = 4
-# factor = 4
-# transformer_layers = 2
-#
+# Optional overrides for unimod_mlp when use_variational = true (merged on top of recognition_params):
 # [variational.recognition_unimod_mlp]
 # d_token = 4
 # unimod_num_layers = 2

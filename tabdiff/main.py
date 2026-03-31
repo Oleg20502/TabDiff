@@ -30,6 +30,14 @@ from utils_train import TabDiffDataset
 warnings.filterwarnings('ignore')
 
 
+def _resolve_tabdiff_config_path(curr_dir, config_arg):
+    if not config_arg:
+        return os.path.join(curr_dir, 'configs', 'tabdiff_configs.toml')
+    if os.path.isabs(config_arg):
+        return config_arg
+    return os.path.join(curr_dir, 'configs', config_arg)
+
+
 def main(args):
     device = args.device
 
@@ -46,27 +54,27 @@ def main(args):
     
     ## Set up flags
     is_dcr = 'dcr' in dataname
-    # Ensure backward compat when args comes from a caller that doesn't set --variational
-    if not hasattr(args, 'variational'):
-        args.variational = False
 
-    ## Set experiment name
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    config_toml_path = _resolve_tabdiff_config_path(
+        curr_dir, getattr(args, 'config', None)
+    )
+    toml_cfg = src.load_config(config_toml_path)
+    use_var_for_exp_name = bool(toml_cfg.get('variational', {}).get('use_variational', False))
+
+    ## Set experiment name (suffix matches TOML used for default ckpt discovery in test)
     exp_name = args.exp_name
     if args.exp_name is None:
         exp_name = 'non_learnable_schedule' if args.non_learnable_schedule else 'learnable_schedule'
-    exp_name += '_variational' if args.variational else ''
+    exp_name += '_variational' if use_var_for_exp_name else ''
     exp_name += '_y_only' if args.y_only else ''
-    
-    ## Load configs
-    curr_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = f'{curr_dir}/configs/tabdiff_configs.toml'
-    raw_config = src.load_config(config_path)
-    
+
     print(f"{args.mode.capitalize()} Mode is Enabled")
     num_samples_to_generate = None
     ckpt_path = None
     if args.mode == 'train':
         print("NEW training is started")
+        raw_config = toml_cfg
     elif args.mode == 'test':
         num_samples_to_generate = args.num_samples_to_generate
         ckpt_path = args.ckpt_path
@@ -75,13 +83,15 @@ def main(args):
             ckpt_path_arr = glob.glob(f"{ckpt_parent_path}/best_ema_model*")
             assert ckpt_path_arr, f"Cannot not infer ckpt_path from {ckpt_parent_path}, please make sure that you first train a model before testing!"
             ckpt_path = ckpt_path_arr[0]
-        config_path = os.path.join(os.path.dirname(ckpt_path), 'config.pkl')
-        if os.path.exists(config_path):
-            with open(config_path, 'rb') as f:
-                cached_raw_config = pickle.load(f)
-                print(f"Found cached config at {config_path}")
-        raw_config = cached_raw_config
-    
+        config_pkl_path = os.path.join(os.path.dirname(ckpt_path), 'config.pkl')
+        if os.path.exists(config_pkl_path):
+            with open(config_pkl_path, 'rb') as f:
+                raw_config = pickle.load(f)
+                print(f"Found cached config at {config_pkl_path}")
+        else:
+            print(f"No config.pkl next to checkpoint; using TOML at {config_toml_path}")
+            raw_config = toml_cfg
+
     
     ## Creat model_save and result paths
     model_save_path, result_save_path = None, None
@@ -166,9 +176,11 @@ def main(args):
     raw_config['unimodmlp_params']['d_numerical'] = d_numerical
     raw_config['unimodmlp_params']['categories'] = (categories+1).tolist()  # add one for the mask category
 
-    # Propagate latent_dim to backbone config before the backbone is built
     var_cfg = raw_config.get('variational', {})
-    if args.variational and var_cfg.get('use_variational', True):
+    use_variational = bool(var_cfg.get('use_variational', False))
+
+    # Propagate latent_dim to backbone config before the backbone is built
+    if use_variational:
         raw_config['unimodmlp_params']['latent_dim'] = var_cfg['latent_dim']
     if args.y_only:
         raw_config['unimodmlp_params']['use_mlp'] = False     # drop the mlp when training the unconditional model
@@ -196,7 +208,7 @@ def main(args):
                 raw_config['diffusion_params']['noise_schedule_params']['k'] = noise_schedule.k()[0].item()    # the target col is placed at the first position
 
     ensure_denoiser_config_inplace(raw_config)
-    latent_d = int(var_cfg.get("latent_dim", 0)) if args.variational else 0
+    latent_d = int(var_cfg.get("latent_dim", 0)) if use_variational else 0
     backbone = build_denoiser_backbone(
         raw_config,
         d_numerical=d_numerical,
@@ -219,8 +231,9 @@ def main(args):
         with open(y_only_model_config_path, 'rb') as f:
                 y_only_model_config = pickle.load(f)
         ensure_denoiser_config_inplace(y_only_model_config)
-        y_only_latent = int(
-            y_only_model_config.get("variational", {}).get("latent_dim", 0)
+        _yv = y_only_model_config.get("variational", {})
+        y_only_latent = (
+            int(_yv.get("latent_dim", 0)) if _yv.get("use_variational", False) else 0
         )
         y_only_bb = build_denoiser_backbone(
             y_only_model_config,
@@ -242,7 +255,7 @@ def main(args):
 
     ## Build optional recognition model (variational mode)
     recognition_model = None
-    if args.variational and var_cfg.get('use_variational', True):
+    if use_variational:
         recognition_model = build_recognition_model(
             var_cfg,
             num_numerical_features=d_numerical,
@@ -260,9 +273,9 @@ def main(args):
         **raw_config['diffusion_params'],
         device=device,
         recognition_model=recognition_model,
-        latent_dim=var_cfg.get('latent_dim', 0) if args.variational else 0,
-        latent_policy=var_cfg.get('latent_policy', 'consistency') if args.variational else 'consistency',
-        kl_weight=var_cfg.get('kl_weight', 1.0) if args.variational else 1.0,
+        latent_dim=var_cfg.get('latent_dim', 0) if use_variational else 0,
+        latent_policy=var_cfg.get('latent_policy', 'consistency') if use_variational else 'consistency',
+        kl_weight=var_cfg.get('kl_weight', 1.0) if use_variational else 1.0,
     )
     num_params = sum(p.numel() for p in diffusion.parameters())
     print("The number of parameters = ", num_params)
@@ -316,8 +329,8 @@ def main(args):
         device=device,
         ckpt_path=ckpt_path,
         y_only=args.y_only,
-        kl_weight=var_cfg.get('kl_weight', 1.0) if args.variational else 1.0,
-        kl_warmup_steps=var_cfg.get('kl_warmup_steps', 5000) if args.variational else 0,
+        kl_weight=var_cfg.get('kl_weight', 1.0) if use_variational else 0.0,
+        kl_warmup_steps=var_cfg.get('kl_warmup_steps', 5000) if use_variational else 0,
     )
     try:
         if args.mode == 'test':
@@ -354,7 +367,12 @@ if __name__ == '__main__':
 
     parser.add_argument('--dataname', type=str, default='adult', help='Name of dataset.')
     parser.add_argument('--gpu', type=int, default=0, help='GPU index.')
-    parser.add_argument('--variational', action='store_true', help='Enable VA-DDPM variational approach')
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='TOML filename under tabdiff/configs/ (e.g. tabdiff_configs_variational.toml) or absolute path.',
+    )
 
     args = parser.parse_args()
 

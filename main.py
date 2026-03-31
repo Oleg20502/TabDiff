@@ -17,7 +17,12 @@ if __name__ == '__main__':
     # Configs for tabdiff
     parser.add_argument('--y_only', action='store_true', help='Train guidance model that only model the target column')
     parser.add_argument('--non_learnable_schedule', action='store_true', help='disable learnable noise schedule')
-    parser.add_argument('--variational', action='store_true', help='Enable VA-DDPM variational approach: trains a recognition model that produces a latent variable v conditioning the denoiser')
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='TabDiff TOML: filename in tabdiff/configs/ (e.g. tabdiff_configs_variational.toml) or absolute path. VA-DDPM is enabled via use_variational in that file.',
+    )
     
     # Configs for testing tabdiff
     parser.add_argument('--num_samples_to_generate', type=int, default=None, help='Number of samples to be generated while testing')

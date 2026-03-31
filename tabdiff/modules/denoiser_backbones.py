@@ -10,7 +10,7 @@ from tabdiff.modules.transformer import Reconstructor, Tokenizer, Transformer
 
 
 class TransformerEncoderBackbone(nn.Module):
-    """Tokenizer → N×Transformer (no MLPDiffusion bottleneck, no decoder stack) → Reconstructor.
+    """Tokenizer → Transformer → Reconstructor.
 
     Time / latent conditioning is added as a broadcast embedding to all tokens before the stack.
     """

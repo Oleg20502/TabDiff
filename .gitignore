@@ -14,5 +14,6 @@ impute/
 workspace/
 debug/
 tabdiff/result/
+tabdiff/runs/
 
 **/ckpt/*
