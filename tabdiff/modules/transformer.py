@@ -180,8 +180,7 @@ class Transformer(nn.Module):
 
         self.activation = nn.ReLU()
         self.last_activation = nn.ReLU()
-        # self.activation = lib.get_activation_fn(activation)
-        # self.last_activation = lib.get_nonglu_activation_fn(activation)
+        
         self.prenormalization = prenormalization
         self.last_normalization = make_normalization() if prenormalization else None
         self.ffn_dropout = ffn_dropout

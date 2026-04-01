@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 import random
+import shutil
 
 import numpy as np
 from tabdiff.metrics import TabMetrics
@@ -38,6 +39,18 @@ def _resolve_tabdiff_config_path(curr_dir, config_arg):
     return os.path.join(curr_dir, 'configs', config_arg)
 
 
+def _config_to_json_default(obj):
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    raise TypeError(f"Object of type {type(obj).__name__!r} is not JSON serializable")
+
+
 def main(args):
     device = args.device
 
@@ -70,13 +83,12 @@ def main(args):
     exp_name += '_y_only' if args.y_only else ''
 
     print(f"{args.mode.capitalize()} Mode is Enabled")
-    num_samples_to_generate = None
+    num_samples_to_generate = args.num_samples_to_generate
     ckpt_path = None
     if args.mode == 'train':
         print("NEW training is started")
         raw_config = toml_cfg
     elif args.mode == 'test':
-        num_samples_to_generate = args.num_samples_to_generate
         ckpt_path = args.ckpt_path
         if ckpt_path is None:
             ckpt_parent_path = f"{curr_dir}/ckpt/{dataname}/{exp_name}"
@@ -111,6 +123,16 @@ def main(args):
     if result_save_path is not None:
         if not os.path.exists(result_save_path):
             os.makedirs(result_save_path)
+
+    if os.path.isfile(config_toml_path):
+        if args.mode == 'train' and model_save_path:
+            _run_toml_dst = os.path.join(model_save_path, 'run_config.toml')
+            shutil.copy2(config_toml_path, _run_toml_dst)
+            print(f"Saved TOML config for this run to {_run_toml_dst}")
+        elif args.mode == 'test' and result_save_path:
+            _run_toml_dst = os.path.join(result_save_path, 'run_config.toml')
+            shutil.copy2(config_toml_path, _run_toml_dst)
+            print(f"Saved TOML config for this run to {_run_toml_dst}")
     
     ## Make everything determinstic if needed
     raw_config['deterministic'] = args.deterministic
@@ -191,21 +213,27 @@ def main(args):
             main_model_path_arr = glob.glob(f"{main_model_parent_path}/best_ema_model*")
             assert main_model_path_arr, f"Cannot not infer the main model's ckpt_path from {main_model_parent_path}, please make sure that you first train a main model before training the y_only model!"
             main_model_path = main_model_path_arr[0]
+        
         main_model_configs = pickle.load(open(os.path.join(os.path.dirname(main_model_path), 'config.pkl'), 'rb'))
-        if main_model_configs['diffusion_params']['scheduler'] == "power_mean_per_column": # if learnable schedule is enabled in the main model, we need to infer noise params of the target column from the main model ckpt and train the y_only model with those params
+        # if learnable schedule is enabled in the main model,
+        # we need to infer noise params of the target column from the main model ckpt
+        # and train the y_only model with those params
+        if main_model_configs['diffusion_params']['scheduler'] == "power_mean_per_column":
             from tabdiff.models.noise_schedule import PowerMeanNoise_PerColumn, LogLinearNoise_PerColumn
             if info['task_type'] == 'regression':
                 noise_schedule = PowerMeanNoise_PerColumn(
                     num_numerical=main_model_configs['unimodmlp_params']['d_numerical'], 
                     **main_model_configs['diffusion_params']['noise_schedule_params']
                 )
-                raw_config['diffusion_params']['noise_schedule_params']['rho'] = noise_schedule.rho()[0].item()    # the target col is placed at the first position
+                 # the target col is placed at the first position
+                raw_config['diffusion_params']['noise_schedule_params']['rho'] = noise_schedule.rho()[0].item()
             else:
                 noise_schedule = LogLinearNoise_PerColumn(
                     num_categories=len(main_model_configs['unimodmlp_params']['categories']), 
                     **main_model_configs['diffusion_params']['noise_schedule_params']
                 )
-                raw_config['diffusion_params']['noise_schedule_params']['k'] = noise_schedule.k()[0].item()    # the target col is placed at the first position
+                # the target col is placed at the first position
+                raw_config['diffusion_params']['noise_schedule_params']['k'] = noise_schedule.k()[0].item()
 
     ensure_denoiser_config_inplace(raw_config)
     latent_d = int(var_cfg.get("latent_dim", 0)) if use_variational else 0
@@ -253,7 +281,7 @@ def main(args):
         raw_config['diffusion_params']['scheduler'] = 'power_mean_per_column'
         raw_config['diffusion_params']['cat_scheduler'] = 'log_linear_per_column'
 
-    ## Build optional recognition model (variational mode)
+    ## Build optional recognition model (variational model)
     recognition_model = None
     if use_variational:
         recognition_model = build_recognition_model(
@@ -277,13 +305,31 @@ def main(args):
         latent_policy=var_cfg.get('latent_policy', 'consistency') if use_variational else 'consistency',
         kl_weight=var_cfg.get('kl_weight', 1.0) if use_variational else 1.0,
     )
-    num_params = sum(p.numel() for p in diffusion.parameters())
-    print("The number of parameters = ", num_params)
+
+    def _param_counts(mod):
+        if mod is None:
+            return 0, 0
+        params = list(mod.parameters())
+        trainable = sum(p.numel() for p in params if p.requires_grad)
+        total = sum(p.numel() for p in params)
+        return trainable, total
+
+    dn_tr, dn_tot = _param_counts(model)
+    print(f"Denoiser: trainable: {dn_tr:,}  total: {dn_tot:,}")
+    if recognition_model is not None:
+        rec_tr, rec_tot = _param_counts(recognition_model)
+        print(f"Recognition: trainable: {rec_tr:,}  total: {rec_tot:,}")
+    else:
+        print("Recognition: trainable: 0  total: 0  (variational disabled)")
+    diff_tr, diff_tot = _param_counts(diffusion)
+    print(
+        f"Diffusion module (schedules, y_only if any): trainable: {diff_tr:,}  total: {diff_tot:,}"
+    )
     diffusion.to(device)
     diffusion.train()
 
     ## Print the configs
-    printed_configs = json.dumps(raw_config, default=lambda x: int(x) if isinstance(x, np.int64) else x, indent=4)
+    printed_configs = json.dumps(raw_config, default=_config_to_json_default, indent=4)
     print(f"The config of the current run is : \n {printed_configs}")
     
     ## Experiment logging (wandb, tensorboard, or none) — only from [train.main].logger in tabdiff_configs.toml
@@ -291,6 +337,11 @@ def main(args):
     raw_config['project_name'] = project_name
     train_main = dict(raw_config['train']['main'])
     log_backend = train_main.pop('logger', 'wandb')
+    plot_density = train_main.pop('plot_density', True)
+    if not isinstance(plot_density, bool):
+        raise ValueError(
+            f"Invalid [train.main].plot_density {plot_density!r}; use true or false in tabdiff_configs.toml."
+        )
     if log_backend not in ('wandb', 'tensorboard', 'none'):
         raise ValueError(
             f"Invalid [train.main].logger {log_backend!r} in tabdiff_configs.toml; use 'wandb', 'tensorboard', or 'none'."
@@ -331,6 +382,7 @@ def main(args):
         y_only=args.y_only,
         kl_weight=var_cfg.get('kl_weight', 1.0) if use_variational else 0.0,
         kl_warmup_steps=var_cfg.get('kl_warmup_steps', 5000) if use_variational else 0,
+        plot_density=plot_density,
     )
     try:
         if args.mode == 'test':
@@ -354,8 +406,13 @@ def main(args):
         else:
             ## Save config
             config_save_path = raw_config['model_save_path']
-            with open (os.path.join(config_save_path, 'config.pkl'), 'wb') as f:
+            pkl_path = os.path.join(config_save_path, 'config.pkl')
+            json_path = os.path.join(config_save_path, 'config.json')
+            with open(pkl_path, 'wb') as f:
                 pickle.dump(raw_config, f)
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(raw_config, f, indent=4, default=_config_to_json_default)
+            print(f"Saved config to {pkl_path} and {json_path}")
             trainer.run_loop()
     finally:
         logger.finish()

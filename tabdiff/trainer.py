@@ -39,6 +39,7 @@ class Trainer:
             # Variational parameters
             kl_weight=1.0,
             kl_warmup_steps=5000,
+            plot_density=True,
             **kwargs
     ):
         self.y_only = y_only
@@ -86,6 +87,7 @@ class Trainer:
         self.model_save_path = model_save_path
         self.result_save_path = result_save_path
         self.ckpt_path = ckpt_path
+        self.plot_density = plot_density
         if self.ckpt_path is not None:
             state_dicts = torch.load(self.ckpt_path, map_location=self.device)
             self.diffusion._denoise_fn.load_state_dict(state_dicts['denoise_fn'])
@@ -314,13 +316,17 @@ class Trainer:
                 torch.save(state_dicts, os.path.join(self.model_save_path, f'model_{epoch+1}.pt'))
                 
                 print_with_bar(f"Routine Generation Evaluation every {self.check_val_every}, currently at epoch #{epoch+1}, wiht total_loss={total_loss}.")
-                out_metrics, _, _ = self.evaluate_generation(save_metric_details=True, plot_density=True)
+                out_metrics, _, _ = self.evaluate_generation(
+                    save_metric_details=True, plot_density=self.plot_density
+                )
                 log_dict.update(out_metrics)
                 print(f"Eval Resutls of the Non-EMA model:\n {out_metrics}")
 
                 # Evaluate the EMA model
                 torch.save(self.ema_model.state_dict(), os.path.join(self.model_save_path, f'ema_model_{epoch+1}.pt'))
-                ema_out_metrics, _, _ = self.evaluate_generation(ema=True, save_metric_details=True, plot_density=True)
+                ema_out_metrics, _, _ = self.evaluate_generation(
+                    ema=True, save_metric_details=True, plot_density=self.plot_density
+                )
                 log_dict.update({
                     "ema": ema_out_metrics,
                 })
@@ -434,7 +440,9 @@ class Trainer:
         print_with_bar(f"The AVG over {num_runs} runs are: \n{avg_std}")
         
     def test(self):    
-        out_metrics, _, _ = self.evaluate_generation(save_metric_details=True, plot_density=True)
+        out_metrics, _, _ = self.evaluate_generation(
+            save_metric_details=True, plot_density=self.plot_density
+        )
         print_with_bar(f"Results of the test are: \n{out_metrics}")
         self.logger.log(out_metrics)
         print(out_metrics)

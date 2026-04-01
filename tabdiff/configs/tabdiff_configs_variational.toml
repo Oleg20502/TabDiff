@@ -16,7 +16,7 @@ factor = 32
 bias = true
 dim_t = 1024
 use_mlp = true
-latent_dim = 0   # set from [variational].latent_dim when use_variational is true
+latent_dim = 0
 
 [diffusion_params]
 num_timesteps = 50
@@ -50,12 +50,13 @@ k_offset=1.0
 
 [train.main]
 logger = "tensorboard"
+plot_density = false      # false = skip density PNGs during eval (no Kaleido/Chrome)
 steps = 8000
 lr = 0.001
 weight_decay = 0
 ema_decay = 0.997
-batch_size = 64
-check_val_every = 2000
+batch_size = 512
+check_val_every = 50
 lr_scheduler = "reduce_lr_on_plateau"
 factor = 0.90
 reduce_lr_patience = 50
@@ -64,16 +65,16 @@ c_lambda = 1.0
 d_lambda = 1.0
 
 [sample]
-batch_size = 10
+batch_size = 512
 
 [variational]
 use_variational = true
 latent_dim = 64
 latent_policy = "consistency"
-kl_weight = 1.0
+kl_weight = 0.01
 kl_warmup_steps = 1000
-posterior_inputs = "x0_xt_t"
-recognition_backbone = "unimod_mlp"
+posterior_inputs = "x0_xt_t"   # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
+recognition_backbone = "unimod_mlp"   # mlp | unimod_mlp
 
 [variational.recognition_params]
 hidden_dim = 128
@@ -82,8 +83,8 @@ time_embed_dim = 64
 cat_embed_dim = 32
 
 [variational.recognition_unimod_mlp]
-d_token = 4
-unimod_num_layers = 2
+d_token = 64
+unimod_num_layers = 12
 n_head = 1
 factor = 32
 bias = true

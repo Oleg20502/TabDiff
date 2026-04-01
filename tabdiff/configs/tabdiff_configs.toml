@@ -13,7 +13,7 @@ factor = 32
 bias = true
 dim_t = 1024
 use_mlp = true
-latent_dim = 0   # overridden from [variational].latent_dim when use_variational = true
+latent_dim = 0
 
 # [denoiser.transformer_encoder]
 # num_layers = 4
@@ -55,13 +55,14 @@ k_init=-6.0
 k_offset=1.0
 
 [train.main]
-logger = "tensorboard"   # "wandb" | "tensorboard" | "none"
+logger = "tensorboard"
+plot_density = false      # false = skip density PNGs during eval (no Kaleido/Chrome)
 steps = 8000
 lr = 0.001
 weight_decay = 0
 ema_decay = 0.997
-batch_size = 64
-check_val_every = 2000
+batch_size = 512
+check_val_every = 50
 lr_scheduler = "reduce_lr_on_plateau"
 factor = 0.90           # hyperparam for reduce_lr_on_plateau
 reduce_lr_patience = 50        # hyperparam for reduce_lr_on_plateau
@@ -70,30 +71,19 @@ c_lambda = 1.0
 d_lambda = 1.0
 
 [sample]
-batch_size = 10
+batch_size = 512
 
-# ---------------------------------------------------------------------------
-# Variational (VA-DDPM). Toggle use_variational only, or use tabdiff_configs_variational.toml
-# ---------------------------------------------------------------------------
 [variational]
 use_variational = false
 latent_dim = 64
 latent_policy = "consistency"   # "consistency" | "fresh" | "prior_only"
-kl_weight = 1.0
+kl_weight = 0.01
 kl_warmup_steps = 1000
-posterior_inputs = "x0_xt_t"         # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
-recognition_backbone = "unimod_mlp"  # mlp | unimod_mlp
+posterior_inputs = "x0_xt_t"
+recognition_backbone = "unimod_mlp"
 
 [variational.recognition_params]
 hidden_dim = 128
 num_layers = 4
 time_embed_dim = 64
 cat_embed_dim = 32
-
-# Optional overrides for unimod_mlp when use_variational = true (merged on top of recognition_params):
-# [variational.recognition_unimod_mlp]
-# d_token = 4
-# unimod_num_layers = 2
-# n_head = 1
-# factor = 32
-# bias = true
