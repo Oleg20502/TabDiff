@@ -1,6 +1,3 @@
-# VA-DDPM (variational) training — use with: python main.py --config tabdiff_configs_variational.toml ...
-# Same structure as tabdiff_configs.toml but use_variational = true.
-
 [data]
 dequant_dist = "none"
 int_dequant_factor = 0
@@ -55,8 +52,8 @@ steps = 8000
 lr = 0.001
 weight_decay = 0
 ema_decay = 0.997
-batch_size = 512
-check_val_every = 50
+batch_size = 4096
+check_val_every = 1000
 lr_scheduler = "reduce_lr_on_plateau"
 factor = 0.90
 reduce_lr_patience = 50
@@ -65,16 +62,16 @@ c_lambda = 1.0
 d_lambda = 1.0
 
 [sample]
-batch_size = 512
+batch_size = 10000
 
 [variational]
 use_variational = true
 latent_dim = 64
-latent_policy = "consistency"
+latent_policy = "consistency"     # "consistency" | "fresh"
 kl_weight = 0.01
 kl_warmup_steps = 1000
 posterior_inputs = "x0_xt_t"   # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
-recognition_backbone = "unimod_mlp"   # mlp | unimod_mlp
+recognition_backbone = "unimod_mlp"   # mlp | unimod_mlp | unimod_transformer_heads
 
 [variational.recognition_params]
 hidden_dim = 128
@@ -83,8 +80,17 @@ time_embed_dim = 64
 cat_embed_dim = 32
 
 [variational.recognition_unimod_mlp]
-d_token = 64
-unimod_num_layers = 12
+d_token = 4
+unimod_num_layers = 4
+n_head = 1
+factor = 32
+bias = true
+
+[variational.recognition_unimod_transformer_heads]
+body_num_layers = 2
+mu_head_num_layers = 2
+log_var_head_num_layers = 2
+d_token = 4
 n_head = 1
 factor = 32
 bias = true

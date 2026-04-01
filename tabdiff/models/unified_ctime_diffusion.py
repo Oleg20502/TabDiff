@@ -246,7 +246,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         sample = torch.cat([z_norm, z_cat], dim=1).cpu()
         return sample
     
-    def sample_all(self, num_samples, batch_size, keep_nan_samples=False):        
+    def sample_all(self, num_samples, batch_size, keep_nan_samples=False):
         b = batch_size
 
         all_samples = []

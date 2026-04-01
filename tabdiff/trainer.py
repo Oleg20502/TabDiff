@@ -14,13 +14,24 @@ from utils_train import update_ema
 from tqdm import tqdm
 
 BAR = "=============="
+
+
 def print_with_bar(log_msg):
+    """Print ``log_msg`` framed with a repeated bar for visibility in logs."""
     log_msg = BAR + log_msg + BAR
     if "End" in log_msg:
          log_msg += "\n"
     print(log_msg)
 
 class Trainer:
+    """Train and evaluate TabDiff's continuous-time masked diffusion on tabular data.
+
+    Holds the ``UnifiedCtimeDiffusion`` model, optimizer, EMA copies of the denoiser
+    and noise schedules (and recognition net when variational), runs the main
+    training loop, periodic sampling-based metrics, checkpointing, and test/report
+    entry points for generation quality, DCR, and imputation.
+    """
+
     def __init__(
             self, diffusion, train_iter, dataset, test_dataset,  metrics, logger, 
             lr, weight_decay,
@@ -42,6 +53,7 @@ class Trainer:
             plot_density=True,
             **kwargs
     ):
+        """Wire training dependencies, build optimizer and EMA state, optionally load weights."""
         self.y_only = y_only
         self.diffusion = diffusion
         self.ema_model = deepcopy(self.diffusion._denoise_fn)
@@ -100,18 +112,28 @@ class Trainer:
         self.curr_epoch = int(os.path.basename(self.ckpt_path).split('_')[-1].split('.')[0]) if self.ckpt_path is not None else 0
 
     def _anneal_lr(self, step):
+        """Linearly decay the optimizer learning rate from ``init_lr`` toward zero over training."""
         frac_done = step / self.steps
         lr = self.init_lr * (1 - frac_done)
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
     def _get_kl_weight(self, epoch: int) -> float:
-        """Linear KL warmup: ramps from 0 → kl_weight over kl_warmup_steps epochs."""
+        """Return the KL term multiplier for this epoch (linear warmup to ``kl_weight``).
+
+        Ramps from 0 to ``kl_weight`` over ``kl_warmup_steps`` epochs; constant
+        ``kl_weight`` once warmup is finished or if warmup is disabled.
+        """
         if self.kl_warmup_steps <= 0:
             return self.kl_weight
         return self.kl_weight * min(1.0, epoch / self.kl_warmup_steps)
 
     def _run_step(self, x, closs_weight, dloss_weight, kl_weight_cur):
+        """Run one optimization step: forward ``mixed_loss``, backward, and optimizer step.
+
+        Returns the per-term ``dloss``, ``closs``, and ``kl_loss`` scalars; the backward
+        total uses ``dloss_weight``, ``closs_weight``, and ``kl_weight_cur``.
+        """
         x = x.to(self.device)
         
         self.diffusion.train()
@@ -126,7 +148,11 @@ class Trainer:
 
         return dloss, closs, kl_loss
     
-    def compute_loss(self):      # eval loss is not weighted
+    def compute_loss(self):
+        """Average discrete, continuous, and KL losses over the training loader in eval mode.
+
+        Uses ``torch.no_grad()``; loss terms are not scaled by ``c_lambda`` / ``d_lambda``.
+        """
         curr_dloss = 0.0
         curr_closs = 0.0
         curr_klloss = 0.0
@@ -147,6 +173,13 @@ class Trainer:
         return mloss, gloss, klloss
     
     def run_loop(self):
+        """Main training loop: optimize diffusion, update EMA, log, and checkpoint.
+
+        For each epoch, runs weighted training steps, optional LR schedule updates,
+        EMA updates, saves best non-EMA and EMA checkpoints when loss improves (after
+        a fixed epoch threshold), and every ``check_val_every`` epochs runs
+        ``evaluate_generation`` on live and EMA weights, logging metrics.
+        """
         patience = 0
         closs_weight, dloss_weight = self.c_lambda, self.d_lambda
         best_loss = np.inf
@@ -342,6 +375,12 @@ class Trainer:
         })
         
     def report_test(self, num_runs):
+        """Run ``num_runs`` independent synthetic generations and aggregate standard metrics.
+
+        Collects density shape/trend, MLE, and C2ST per run, writes per-run samples under
+        ``all_samples/``, and saves ``all_results.csv`` and ``avg_std.csv`` under
+        ``result_save_path``.
+        """
         save_dir = self.result_save_path
         
         shape_ = []
@@ -394,6 +433,11 @@ class Trainer:
         print_with_bar(f"The AVG over {num_runs} runs are: \n{avg_std}")
         
     def report_test_dcr(self, num_runs):
+        """Run ``num_runs`` generations and aggregate the DCR privacy-style metric.
+
+        Saves per-run samples, summary CSVs, and concatenated ``dcr_real`` / ``dcr_test``
+        arrays to ``dcr.csv`` under ``result_save_path``.
+        """
         save_dir = self.result_save_path
         
         dcr_ = []
@@ -439,7 +483,8 @@ class Trainer:
         
         print_with_bar(f"The AVG over {num_runs} runs are: \n{avg_std}")
         
-    def test(self):    
+    def test(self):
+        """Single evaluation pass: generate synthetic data, compute metrics, log and print."""
         out_metrics, _, _ = self.evaluate_generation(
             save_metric_details=True, plot_density=self.plot_density
         )
@@ -448,6 +493,20 @@ class Trainer:
         print(out_metrics)
 
     def evaluate_generation(self, save_metric_details=False, plot_density=False, ema=False):
+        """Sample a synthetic table, score it with ``metrics``, and persist outputs.
+
+        Writes ``samples.csv``, ``all_results.json``, optional metric-detail files from
+        ``extras``, and optional ``density_plots.png`` under
+        ``result_save_path / {curr_epoch} / [ema/]``.
+
+        Args:
+            save_metric_details: If True, persist DataFrame/dict extras (e.g. shapes, trends).
+            plot_density: If True, render column density plots (requires Plotly/Kaleido).
+            ema: If True, temporarily swap in EMA weights for sampling via ``sample_synthetic``.
+
+        Returns:
+            Tuple of ``(out_metrics, extras, syn_df)`` from the evaluation pipeline.
+        """
         self.diffusion.eval()
         
         # Sample a synthetic table
@@ -494,6 +553,13 @@ class Trainer:
         
 
     def sample_synthetic(self, num_samples, keep_nan_samples=True, ema=False):
+        """Draw ``num_samples`` rows from the diffusion model and decode to a ``DataFrame``.
+
+        Runs ``diffusion.sample_all`` in batches, inverts numerical/categorical transforms,
+        and assembles columns in dataset order. For ``y_only`` training, only the target
+        column is recovered. If ``ema`` is True, swaps EMA parameters in for the duration
+        of sampling and restores originals afterward.
+        """
         if ema:
             curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition = self.to_ema_model()
         info = self.metrics.info
@@ -543,6 +609,10 @@ class Trainer:
         return syn_df
     
     def to_ema_model(self):
+        """Point ``diffusion`` at EMA denoiser, noise schedules, and recognition net.
+
+        Returns the previous live modules so they can be restored with ``to_model``.
+        """
         curr_model = self.diffusion._denoise_fn
         curr_num_schedule = self.diffusion.num_schedule
         curr_cat_schedule = self.diffusion.cat_schedule
@@ -556,6 +626,7 @@ class Trainer:
         return curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition
 
     def to_model(self, curr_model, curr_num_schedule, curr_cat_schedule, curr_recognition=None):
+        """Restore ``diffusion`` submodules after a temporary EMA swap."""
         self.diffusion._denoise_fn = curr_model      # give back the parameters
         self.diffusion.num_schedule = curr_num_schedule
         self.diffusion.cat_schedule = curr_cat_schedule
@@ -563,6 +634,13 @@ class Trainer:
             self.diffusion.recognition_model = curr_recognition
         
     def test_impute(self, trail_start, trial_size, resample_rounds, impute_condition, imputed_sample_save_dir, w_num, w_cat):
+        """Impute a masked column on test rows using the guidance (y_only) diffusion path.
+
+        For each trial index in ``[trail_start, trail_start + trial_size)``, masks the
+        target (first num or cat column per task type), runs ``sample_impute`` with the
+        given classifier-free guidance weights, decodes to a table, and saves CSVs under
+        ``imputed_sample_save_dir``.
+        """
         self.diffusion.eval()
         
         info = self.metrics.info
@@ -622,6 +700,13 @@ class Trainer:
         
 @torch.no_grad()
 def split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse):
+    """Split model output into numerical, categorical, and target blocks in original feature space.
+
+    ``syn_data`` is laid out as [numerical columns | categorical columns], with the target
+    counted as numerical for regression and as categorical for classification. Applies
+    ``num_inverse``, ``int_inverse``, and ``cat_inverse`` so values match the preprocessed
+    dataset domain, then returns ``(syn_num, syn_cat, syn_target)`` with targets separated.
+    """
     task_type = info['task_type']
 
     num_col_idx = info['num_col_idx']
@@ -655,8 +740,14 @@ def split_num_cat_target(syn_data, info, num_inverse, int_inverse, cat_inverse):
 
     return syn_num, syn_cat, syn_target
 
-def recover_data(syn_num, syn_cat, syn_target, info):
 
+def recover_data(syn_num, syn_cat, syn_target, info):
+    """Build a ``DataFrame`` with integer column indices in full table order.
+
+    Uses ``info['idx_mapping']`` to place each original column index ``i`` from the
+    appropriate block (``syn_num``, ``syn_cat``, or ``syn_target``). Column names are
+    not set; callers typically ``rename`` with ``idx_name_mapping`` afterward.
+    """
     num_col_idx = info['num_col_idx']
     cat_col_idx = info['cat_col_idx']
     target_col_idx = info['target_col_idx']

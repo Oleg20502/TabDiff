@@ -109,7 +109,7 @@ def main(args):
     model_save_path, result_save_path = None, None
     if args.mode == 'train':
         model_save_path = 'debug/ckpt' if args.debug else f'{curr_dir}/ckpt/{dataname}/{exp_name}'
-        result_save_path = model_save_path.replace('ckpt', 'result')  #i.e., f'{curr_dir}/results/{dataname}/{exp_name}'
+        result_save_path = model_save_path.replace('ckpt', 'result')  #i.e., f'{curr_dir}/result/{dataname}/{exp_name}'
     elif args.mode == 'test':
         if args.report:
             result_save_path = f"eval/report_runs/{exp_name}/{dataname}"

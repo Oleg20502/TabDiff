@@ -61,7 +61,7 @@ steps = 8000
 lr = 0.001
 weight_decay = 0
 ema_decay = 0.997
-batch_size = 512
+batch_size = 1024
 check_val_every = 50
 lr_scheduler = "reduce_lr_on_plateau"
 factor = 0.90           # hyperparam for reduce_lr_on_plateau
@@ -71,12 +71,12 @@ c_lambda = 1.0
 d_lambda = 1.0
 
 [sample]
-batch_size = 512
+batch_size = 4096
 
 [variational]
 use_variational = false
 latent_dim = 64
-latent_policy = "consistency"   # "consistency" | "fresh" | "prior_only"
+latent_policy = "consistency"
 kl_weight = 0.01
 kl_warmup_steps = 1000
 posterior_inputs = "x0_xt_t"

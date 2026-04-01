@@ -113,10 +113,103 @@ class RecognitionUniModBody(nn.Module):
         return self.out(h.mean(dim=1))
 
 
+class RecognitionUniModTransformerHeadsBody(nn.Module):
+    """Tokenizer → shared Transformer body → separate Transformer heads → mean-pool features.
+
+    Generalizes :class:`RecognitionUniModBody` by replacing the single linear map to
+    ``hidden_dim`` with two Transformer stacks whose outputs are mean-pooled to
+    ``d_token``-dim vectors (then :class:`RecognitionModel` applies ``mu_head`` /
+    ``logvar_head`` linear projections to ``latent_dim``).
+    """
+
+    def __init__(
+        self,
+        num_numerical_features: int,
+        num_classes_per_column: list,
+        posterior_inputs: str,
+        d_token: int,
+        body_num_layers: int,
+        mu_head_num_layers: int,
+        log_var_head_num_layers: int,
+        n_head: int,
+        factor: int,
+        bias: bool,
+        time_embed_dim: int,
+    ):
+        super().__init__()
+        self.posterior_inputs = posterior_inputs
+        self.vocab_sizes: List[int] = [k + 1 for k in num_classes_per_column]
+        tok_cats = self.vocab_sizes if self.vocab_sizes else None
+        self.tokenizer = Tokenizer(num_numerical_features, tok_cats, d_token, bias)
+        self.body = Transformer(
+            body_num_layers, d_token, n_head, d_token, factor
+        )
+        self.mu_head_transformer = Transformer(
+            mu_head_num_layers, d_token, n_head, d_token, factor
+        )
+        self.log_var_head_transformer = Transformer(
+            log_var_head_num_layers, d_token, n_head, d_token, factor
+        )
+        self.time_embed = (
+            _SinusoidalEmbedding(time_embed_dim)
+            if posterior_inputs != "x0"
+            else None
+        )
+        self.time_to_token = (
+            nn.Linear(time_embed_dim, d_token)
+            if self.time_embed is not None
+            else None
+        )
+
+    def _seq(self, x_num: torch.Tensor, x_cat: torch.Tensor) -> torch.Tensor:
+        if not self.vocab_sizes:
+            oh = None
+        else:
+            oh = torch.cat(
+                [
+                    F.one_hot(x_cat[:, i].long(), num_classes=self.vocab_sizes[i]).to(
+                        x_num.dtype
+                    )
+                    for i in range(len(self.vocab_sizes))
+                ],
+                dim=-1,
+            )
+        e = self.tokenizer(x_num, oh)
+        return e[:, 1:, :]
+
+    def forward(
+        self,
+        x_num: torch.Tensor,
+        x_cat: torch.Tensor,
+        x_num_t: torch.Tensor,
+        x_cat_t: torch.Tensor,
+        t: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.posterior_inputs == "x0_xt_t":
+            h = torch.cat(
+                [self._seq(x_num, x_cat), self._seq(x_num_t, x_cat_t)], dim=1
+            )
+        elif self.posterior_inputs == "xt_t":
+            h = self._seq(x_num_t, x_cat_t)
+        elif self.posterior_inputs == "x0_t":
+            h = self._seq(x_num, x_cat)
+        else:
+            h = self._seq(x_num, x_cat)
+
+        if self.time_embed is not None and self.time_to_token is not None:
+            te = self.time_to_token(self.time_embed(t))
+            h = h + te.unsqueeze(1)
+
+        h = self.body(h)
+        h_mu = self.mu_head_transformer(h)
+        h_lv = self.log_var_head_transformer(h)
+        return h_mu.mean(dim=1), h_lv.mean(dim=1)
+
+
 class RecognitionModel(nn.Module):
     """Recognition network r_phi(v | x_num, x_cat) with pluggable encoder backbone."""
 
-    BACKBONES = frozenset({"mlp", "unimod_mlp"})
+    BACKBONES = frozenset({"mlp", "unimod_mlp", "unimod_transformer_heads"})
 
     def __init__(
         self,
@@ -132,8 +225,9 @@ class RecognitionModel(nn.Module):
     ):
         """
         Args:
-            backbone: ``mlp`` (flat MLP on packed features) or ``unimod_mlp``
-                (Tokenizer + Transformer on tabular tokens).
+            backbone: ``mlp`` (flat MLP), ``unimod_mlp`` (Tokenizer + Transformer +
+                linear to hidden), or ``unimod_transformer_heads`` (Tokenizer + body
+                Transformer + separate Transformer heads for mu / log-var features).
             backbone_params: Hyperparameters for the chosen backbone (merged with
                 any extra ``**kwargs`` for backward compatibility).
         """
@@ -183,6 +277,34 @@ class RecognitionModel(nn.Module):
 
         if backbone == "mlp":
             self.body = RecognitionMLPEncoder(flat_dim, hidden_dim, num_layers)
+            feat_dim = hidden_dim
+        elif backbone == "unimod_transformer_heads":
+            d_token = int(params.get("d_token", 4))
+            n_head = int(params.get("n_head", 1))
+            factor = int(params.get("factor", 32))
+            bias = bool(params.get("bias", True))
+            body_nl = int(params.get("body_num_layers", params.get("unimod_num_layers", num_layers)))
+            mu_nl = int(params.get("mu_head_num_layers", 2))
+            lv_nl = int(
+                params.get(
+                    "log_var_head_num_layers",
+                    params.get("logvar_head_num_layers", 2),
+                )
+            )
+            self.body = RecognitionUniModTransformerHeadsBody(
+                num_numerical_features,
+                num_classes_per_column,
+                posterior_inputs,
+                d_token,
+                body_nl,
+                mu_nl,
+                lv_nl,
+                n_head,
+                factor,
+                bias,
+                time_embed_dim,
+            )
+            feat_dim = d_token
         else:
             d_token = int(params.get("d_token", 4))
             n_head = int(params.get("n_head", 1))
@@ -201,9 +323,10 @@ class RecognitionModel(nn.Module):
                 time_embed_dim,
                 hidden_dim,
             )
+            feat_dim = hidden_dim
 
-        self.mu_head = nn.Linear(hidden_dim, latent_dim)
-        self.logvar_head = nn.Linear(hidden_dim, latent_dim)
+        self.mu_head = nn.Linear(feat_dim, latent_dim)
+        self.logvar_head = nn.Linear(feat_dim, latent_dim)
 
     def _embed_state(self, x_num: torch.Tensor, x_cat: torch.Tensor) -> torch.Tensor:
         parts = [x_num] if self.num_numerical_features > 0 else []
@@ -246,14 +369,19 @@ class RecognitionModel(nn.Module):
         x_cat_t: torch.Tensor,
         t: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.backbone_name == "unimod_mlp":
+        if self.backbone_name == "unimod_transformer_heads":
+            h_mu, h_lv = self.body(x_num, x_cat, x_num_t, x_cat_t, t)
+            mu = self.mu_head(h_mu)
+            logvar = self.logvar_head(h_lv)
+        elif self.backbone_name == "unimod_mlp":
             h = self.body(x_num, x_cat, x_num_t, x_cat_t, t)
+            mu = self.mu_head(h)
+            logvar = self.logvar_head(h)
         else:
             inp = self._flat_inputs(x_num, x_cat, x_num_t, x_cat_t, t)
             h = self.body(inp)
-
-        mu = self.mu_head(h)
-        logvar = self.logvar_head(h)
+            mu = self.mu_head(h)
+            logvar = self.logvar_head(h)
         logvar = torch.clamp(logvar, self.min_logvar, self.max_logvar)
         return mu, logvar
 
@@ -272,7 +400,7 @@ class LatentPolicy(nn.Module):
 
     def __init__(
         self,
-        policy_type: Literal["shared", "prior_only", "consistency"],
+        policy_type: Literal["fresh", "prior_only", "consistency"],
         latent_dim: int,
         recognition_model: Optional[RecognitionModel] = None,
     ):

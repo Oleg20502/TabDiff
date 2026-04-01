@@ -54,7 +54,12 @@ def _merged_recognition_params(var_cfg: Dict[str, Any]) -> Tuple[str, Dict[str, 
     backbone = _variational_recognition_backbone(var_cfg)
     base = dict(var_cfg.get("recognition_params") or {})
 
-    if backbone == "transformer_encoder":
+    if backbone == "unimod_transformer_heads":
+        key = "recognition_unimod_transformer_heads"
+        extra = var_cfg.get(key)
+        if not isinstance(extra, dict):
+            extra = {}
+    elif backbone == "transformer_encoder":
         backbone = "unimod_mlp"
         te = var_cfg.get("recognition_transformer_encoder")
         um = var_cfg.get("recognition_unimod_mlp")
