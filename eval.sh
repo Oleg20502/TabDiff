@@ -3,8 +3,8 @@
 python main.py \
     --gpu 3 \
     --exp_name try_1 \
-    --config tabdiff_configs.toml \
-    --ckpt_path tabdiff/ckpt/adult/try_1/model_4600.pt \
     --mode test \
     --dataname adult \
-    --report
+    --report \
+    --eval_dir N_50 \
+    --num_timesteps 50

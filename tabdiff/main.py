@@ -23,6 +23,7 @@ import argparse
 import warnings
 
 from tabdiff.experiment_logger import build_experiment_logger
+from tabdiff.kl_schedulers import build_kl_weight_schedule
 
 from copy import deepcopy
 
@@ -49,6 +50,28 @@ def _config_to_json_default(obj):
     if isinstance(obj, np.bool_):
         return bool(obj)
     raise TypeError(f"Object of type {type(obj).__name__!r} is not JSON serializable")
+
+
+def _apply_sampling_cli_overrides(raw_config: dict, args) -> None:
+    """Apply optional CLI sampling overrides in test mode (after debug tweaks)."""
+    if getattr(args, 'mode', None) != 'test':
+        return
+    dp = raw_config.setdefault('diffusion_params', {})
+    if getattr(args, 'num_timesteps', None) is not None:
+        dp['num_timesteps'] = int(args.num_timesteps)
+        print(f"CLI override: diffusion_params.num_timesteps = {args.num_timesteps}")
+    if getattr(args, 'sample_batch_size', None) is not None:
+        raw_config.setdefault('sample', {})['batch_size'] = int(args.sample_batch_size)
+        print(f"CLI override: [sample].batch_size = {args.sample_batch_size}")
+    sp = dp.setdefault('sampler_params', {})
+    if getattr(args, 'stochastic_sampler', None) is not None:
+        val = args.stochastic_sampler == 'true'
+        sp['stochastic_sampler'] = val
+        print(f"CLI override: sampler_params.stochastic_sampler = {val}")
+    if getattr(args, 'second_order_correction', None) is not None:
+        val = args.second_order_correction == 'true'
+        sp['second_order_correction'] = val
+        print(f"CLI override: sampler_params.second_order_correction = {val}")
 
 
 def main(args):
@@ -112,7 +135,12 @@ def main(args):
         result_save_path = model_save_path.replace('ckpt', 'result')  #i.e., f'{curr_dir}/result/{dataname}/{exp_name}'
     elif args.mode == 'test':
         if args.report:
-            result_save_path = f"eval/report_runs/{exp_name}/{dataname}"
+            eval_dir = getattr(args, "eval_dir", None)
+            if eval_dir is not None and str(eval_dir).strip():
+                eval_dir = str(eval_dir).strip().strip("/")
+                result_save_path = f"eval/report_runs/{exp_name}/{eval_dir}/{dataname}"
+            else:
+                result_save_path = f"eval/report_runs/{exp_name}/{dataname}"
         else:
             result_save_path = os.path.dirname(ckpt_path).replace('ckpt', 'result')    # infer the exp_name from the ckpt_name
     raw_config['model_save_path'] = model_save_path
@@ -159,6 +187,8 @@ def main(args):
         raw_config['diffusion_params']['num_timesteps'] = 4
         raw_config['train']['main']['batch_size'] = 4096
         raw_config['sample']['batch_size'] = 10000
+
+    _apply_sampling_cli_overrides(raw_config, args)
 
     ## Load training data
     batch_size = raw_config['train']['main']['batch_size']
@@ -365,6 +395,7 @@ def main(args):
         tensorboard_log_dir=tb_log_dir,
     )
     sample_batch_size = raw_config['sample']['batch_size']
+    kl_schedule = build_kl_weight_schedule(var_cfg, use_variational)
     trainer = Trainer(
         diffusion,
         train_loader,
@@ -380,8 +411,7 @@ def main(args):
         device=device,
         ckpt_path=ckpt_path,
         y_only=args.y_only,
-        kl_weight=var_cfg.get('kl_weight', 1.0) if use_variational else 0.0,
-        kl_warmup_steps=var_cfg.get('kl_warmup_steps', 5000) if use_variational else 0,
+        kl_schedule=kl_schedule,
         plot_density=plot_density,
     )
     try:

@@ -1,8 +1,8 @@
 #!/bin/bash
 
 python main.py \
-    --gpu 0 \
-    --exp_name rec_unimod_kl_0.01 \
+    --gpu 3 \
+    --exp_name rec_2_heads_kl_1.0 \
     --dataname adult \
     --mode train \
-    --config tabdiff_configs_variational.toml
+    --config tabdiff_configs_variational_2.toml

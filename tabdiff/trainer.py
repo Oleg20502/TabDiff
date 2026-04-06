@@ -1,6 +1,9 @@
 import os
 import glob
 import time
+from collections.abc import Callable
+from typing import Optional
+
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
@@ -47,9 +50,8 @@ class Trainer:
             device=torch.device('cuda:1'),
             ckpt_path = None,
             y_only=False,
-            # Variational parameters
-            kl_weight=1.0,
-            kl_warmup_steps=5000,
+            # Variational: per-epoch KL multiplier (from tabdiff.kl_schedulers)
+            kl_schedule: Optional[Callable[[int], float]] = None,
             plot_density=True,
             **kwargs
     ):
@@ -82,8 +84,7 @@ class Trainer:
         self.ema_decay = ema_decay
         self.lr_scheduler = lr_scheduler
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=factor, patience=reduce_lr_patience, verbose=True)
-        self.kl_weight = kl_weight
-        self.kl_warmup_steps = kl_warmup_steps
+        self.kl_schedule = kl_schedule if kl_schedule is not None else (lambda _epoch: 0.0)
         self.closs_weight_schedule = closs_weight_schedule
         self.c_lambda = c_lambda
         self.d_lambda = d_lambda
@@ -117,16 +118,6 @@ class Trainer:
         lr = self.init_lr * (1 - frac_done)
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
-
-    def _get_kl_weight(self, epoch: int) -> float:
-        """Return the KL term multiplier for this epoch (linear warmup to ``kl_weight``).
-
-        Ramps from 0 to ``kl_weight`` over ``kl_warmup_steps`` epochs; constant
-        ``kl_weight`` once warmup is finished or if warmup is disabled.
-        """
-        if self.kl_warmup_steps <= 0:
-            return self.kl_weight
-        return self.kl_weight * min(1.0, epoch / self.kl_warmup_steps)
 
     def _run_step(self, x, closs_weight, dloss_weight, kl_weight_cur):
         """Run one optimization step: forward ``mixed_loss``, backward, and optimizer step.
@@ -210,7 +201,7 @@ class Trainer:
                 raise NotImplementedError(f"The continuous loss weight schedule {self.closs_weight_schedule} is not implemneted")
 
             # KL weight with linear warmup
-            kl_weight_cur = self._get_kl_weight(epoch)
+            kl_weight_cur = self.kl_schedule(epoch)
 
             # Training Step
             curr_dloss = 0.0

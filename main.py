@@ -26,9 +26,49 @@ if __name__ == '__main__':
     
     # Configs for testing tabdiff
     parser.add_argument('--num_samples_to_generate', type=int, default=None, help='Number of samples to be generated while testing')
+    samp = parser.add_argument_group(
+        'Sampling overrides (--mode test only; omit to use values from config.pkl / TOML)'
+    )
+    samp.add_argument(
+        '--sample_batch_size',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Override [sample].batch_size for generation (forward batch size in sample_all).',
+    )
+    samp.add_argument(
+        '--num_timesteps',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Override diffusion_params.num_timesteps for the reverse sampling chain.',
+    )
+    samp.add_argument(
+        '--stochastic_sampler',
+        type=str,
+        default=None,
+        choices=['true', 'false'],
+        metavar='{true,false}',
+        help='Override diffusion_params.sampler_params.stochastic_sampler.',
+    )
+    samp.add_argument(
+        '--second_order_correction',
+        type=str,
+        default=None,
+        choices=['true', 'false'],
+        metavar='{true,false}',
+        help='Override diffusion_params.sampler_params.second_order_correction.',
+    )
     parser.add_argument('--ckpt_path', type=str, default=None, help='Path to the model checkpoint to be tested')
     parser.add_argument('--report', action='store_true', help="Report testing mode: this mode sequentially runs <num_runs> test runs and report the avg and std")
     parser.add_argument('--num_runs', type=int, default=20, help="Number of runs to be averaged in the report testing mode")
+    parser.add_argument(
+        '--eval_dir',
+        type=str,
+        default=None,
+        metavar='SUBDIR',
+        help='Report mode only: write under eval/report_runs/<exp_name>/<eval_dir>/<dataname> (omit for eval/report_runs/<exp_name>/<dataname>).',
+    )
     
     # Configs for imputation
     parser.add_argument('--impute', action='store_true')
