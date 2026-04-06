@@ -1,0 +1,73 @@
+run:
+  dataset: adult
+  name: transformer_encoder_base
+  output_root: runs
+  seed: 0
+  deterministic: false
+  debug: false
+
+data:
+  dequant_dist: none
+  int_dequant_factor: 0.0
+
+model:
+  y_only: false
+  y_only_source_run_dir: null
+  denoiser:
+    backbone: transformer_encoder
+    params:
+      num_layers: 4
+      d_token: 64
+      n_head: 4
+      factor: 4
+      bias: true
+  variational:
+    enabled: false
+
+diffusion:
+  num_timesteps: 50
+  scheduler: power_mean_per_column
+  cat_scheduler: log_linear_per_column
+  noise_dist: uniform_t
+  edm:
+    precond: true
+    sigma_data: 1.0
+    net_conditioning: sigma
+  sampler:
+    stochastic_sampler: true
+    second_order_correction: true
+  noise_dist_params:
+    P_mean: -1.2
+    P_std: 1.2
+  noise_schedule:
+    sigma_min: 0.002
+    sigma_max: 80
+    rho: 7
+    eps_max: 0.001
+    eps_min: 0.00001
+    rho_init: 7.0
+    rho_offset: 5.0
+    k_init: -6.0
+    k_offset: 1.0
+
+train:
+  steps: 8000
+  lr: 0.001
+  weight_decay: 0.0
+  ema_decay: 0.997
+  batch_size: 1024
+  check_val_every: 50
+  lr_scheduler: reduce_lr_on_plateau
+  factor: 0.9
+  reduce_lr_patience: 50
+  closs_weight_schedule: anneal
+  c_lambda: 1.0
+  d_lambda: 1.0
+
+logging:
+  backend: tensorboard
+  plot_density: false
+
+sampling:
+  batch_size: 4096
+

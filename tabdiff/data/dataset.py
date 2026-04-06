@@ -1,10 +1,20 @@
 import numpy as np
 import os
 
-import src
 from torch.utils.data import Dataset
 
 import torch
+
+from tabdiff.data.tabddpm import (
+    Dataset as TabDDPMDataset,
+    TaskType,
+    Transformations,
+    change_val,
+    get_categories,
+    read_pure_data,
+    transform_dataset,
+)
+from tabdiff.utils.io import load_json
 
 
 class TabularDataset(Dataset):
@@ -68,7 +78,7 @@ def preprocess(dataset_path, y_only=False, dequant_dist='none', int_dequant_fact
     T_dict['dequant_dist'] = dequant_dist
     T_dict['int_dequant_factor'] = int_dequant_factor
 
-    T = src.Transformations(**T_dict)
+    T = Transformations(**T_dict)
 
     dataset = make_dataset(
         data_path = dataset_path,
@@ -86,7 +96,7 @@ def preprocess(dataset_path, y_only=False, dequant_dist='none', int_dequant_fact
         X_train_num, X_test_num = X_num['train'], X_num['test']
         X_train_cat, X_test_cat = X_cat['train'], X_cat['test']
         
-        categories = src.get_categories(X_train_cat)
+        categories = get_categories(X_train_cat)
         d_numerical = X_train_num.shape[1]
 
         X_num = (X_train_num, X_test_num)
@@ -126,7 +136,7 @@ def concat_y_to_X(X, y):
 
 def make_dataset(
     data_path: str,
-    T: src.Transformations,
+    T: Transformations,
     task_type,
     change_val: bool,
     concat = True,
@@ -140,7 +150,7 @@ def make_dataset(
         y = {} if os.path.exists(os.path.join(data_path, 'y_train.npy')) else None
 
         for split in ['train', 'test']:
-            X_num_t, X_cat_t, y_t = src.read_pure_data(data_path, split)
+            X_num_t, X_cat_t, y_t = read_pure_data(data_path, split)
             if y_only:
                 X_num_t = X_num_t[:, :0]
                 X_cat_t = X_cat_t[:, :0]
@@ -159,7 +169,7 @@ def make_dataset(
         y = {} if os.path.exists(os.path.join(data_path, 'y_train.npy')) else None
 
         for split in ['train', 'test']:
-            X_num_t, X_cat_t, y_t = src.read_pure_data(data_path, split)
+            X_num_t, X_cat_t, y_t = read_pure_data(data_path, split)
             if y_only:
                 X_num_t = X_num_t[:, :0]
                 X_cat_t = X_cat_t[:, :0]
@@ -172,22 +182,22 @@ def make_dataset(
             if y is not None:
                 y[split] = y_t
 
-    info = src.load_json(os.path.join(data_path, 'info.json'))
+    info = load_json(os.path.join(data_path, 'info.json'))
     int_col_idx_wrt_num = info['int_col_idx_wrt_num']
 
     if y_only:
         int_col_idx_wrt_num = []
-    D = src.Dataset(
+    D = TabDDPMDataset(
         X_num,
         X_cat,
         y,
         int_col_idx_wrt_num,
         y_info={},
-        task_type=src.TaskType(info['task_type']),
+        task_type=TaskType(info['task_type']),
         n_classes=info.get('n_classes')
     )
 
     if change_val:
-        D = src.change_val(D)
+        D = change_val(D)
 
-    return src.transform_dataset(D, T, None)
+    return transform_dataset(D, T, None)

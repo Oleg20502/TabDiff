@@ -9,3 +9,4 @@ dependencies:
   - pip:
       - synthcity
       - category_encoders
+      - pyyaml

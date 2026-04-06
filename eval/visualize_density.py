@@ -19,8 +19,8 @@ def main(args):
     dataname = args.dataname        
     sample_file_name = args.sample_file_name
 
-    syn_path = f'synthetic/{dataname}/{sample_file_name}'
-    real_path = f'synthetic/{dataname}/real.csv'
+    syn_path = f'processed_data/{dataname}/{sample_file_name}'
+    real_path = f'processed_data/{dataname}/real.csv'
 
     syn_data = pd.read_csv(syn_path)
     real_data = pd.read_csv(real_path)

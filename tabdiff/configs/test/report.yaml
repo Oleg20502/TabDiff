@@ -1,0 +1,20 @@
+test:
+  kind: report
+  name: report
+  checkpoint: best_ema
+  num_samples: null
+  sample_batch_size: null
+  num_timesteps: null
+  stochastic_sampler: null
+  second_order_correction: null
+  report:
+    num_runs: 20
+  imputation:
+    guidance_run_dir: null
+    trial_start: 0
+    trial_size: 50
+    resample_rounds: 1
+    condition: x_t
+    w_num: 0.6
+    w_cat: 0.6
+

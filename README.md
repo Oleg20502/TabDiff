@@ -106,80 +106,108 @@ python process_dataset.py --dataname <NAME_OF_YOUR_DATASET>
 
 ## Training TabDiff
 
-To train an unconditional TabDiff model across the entire table, run
+Training and testing now use separate entrypoints and YAML configs.
 
+Train a model with:
+
+```bash
+python train.py --config tabdiff/configs/train/unimod_mlp/base.yaml --device cuda:0
 ```
-python main.py --dataname <NAME_OF_DATASET> --mode train
+
+The bundled training configs are organized by backbone:
+
+- `tabdiff/configs/train/unimod_mlp/`
+- `tabdiff/configs/train/transformer_encoder/`
+- `tabdiff/configs/train/mlp/`
+
+Variational examples are included as separate YAML files, for example:
+
+```bash
+python train.py --config tabdiff/configs/train/unimod_mlp/variational.yaml --device cuda:0
 ```
 
-Current Options of ```<NAME_OF_DATASET>``` are: adult, default, shoppers, magic, beijing, news
+All hyperparameters now live in YAML. CLI is intentionally limited to runtime arguments such as config path, device, and optional run-name override.
 
-Experiment logging (Weights & Biases, TensorBoard, or none) is set in ```tabdiff/configs/tabdiff_configs.toml``` under ```[train.main]``` with ```logger = "wandb"```, ```"tensorboard"```, or ```"none"```.
+Each training run writes everything under a single directory:
 
-To disable the learnable noise schedules, add the ```--non_learnable_schedule```. Please note that in order for the code to test/sample from such model properly, you need to add this flag for all commands below.
-
-To train with V-DDPM (variational) parameterization, set `use_variational = true` in the TOML or use the bundled config:
+```text
+runs/<dataset>/<run_name>/
 ```
-python main.py --dataname adult --mode train --config tabdiff_configs_variational.toml
-```
-Use the same `--config` when testing so the default checkpoint path (`…/learnable_schedule_variational/…`) matches, or pass `--ckpt_path` explicitly.
 
-To specify your own experiment name, which will be used for logging and saving files, add ```--exp_name <your experiment name>```. This flag overwrites the default experiment name (learnable_schedule/non_learnable_schedule), so, similar to ```--non_learnable_schedule```, once added to training, you need to add it to all following commands as well.
+This directory contains configs, checkpoints, logs, training-time evaluation outputs, test outputs, report outputs, and imputation outputs.
 
 ## Sampling and Evaluating TabDiff (Density, MLE, C2ST)
 
-To sample synthetic tables from trained TabDiff models and evaluate them, run
-```
-python main.py --dataname <NAME_OF_DATASET> --mode test --report
+After training, run testing from the saved run directory:
+
+```bash
+python test.py --run-dir runs/adult/unimod_mlp_base --config tabdiff/configs/test/sample.yaml --device cuda:0
 ```
 
-This will sample 20 synthetic tables randomly. Meanwhile, it will evaluate the density, mle, and c2st scores for each sample and report their average and standard deviation. The results will be printed out in the terminal, and the samples and detailed evaluation results will be placed in ./eval/report_runs/<EXP_NAME>/<NAME_OF_DATASET>/.
+To run report mode:
+
+```bash
+python test.py --run-dir runs/adult/unimod_mlp_base --config tabdiff/configs/test/report.yaml --device cuda:0
+```
+
+Report outputs are saved under:
+
+```text
+runs/<dataset>/<run_name>/report/<report_name>/
+```
 
 ## Evaluating on Additional Fidelity Metrics ($\alpha$-precision and $\beta$-recall scores)
-To evaluate TabDiff on the additional fidelity metrics ($\alpha$-precision and $\beta$-recall scores), you need to first make sure that you have already generated some samples by the previous commands. Then, you need to switch to the `synthcity` environment (as the synthcity packet used to compute those metrics conflicts with the main environment), by running
-```
+
+First generate report samples with the report test config. Then switch to the `synthcity` environment:
+
+```bash
 conda activate synthcity
 ```
-Then, evaluate the metrics by running
-```
-python eval/eval_quality.py --dataname <NAME_OF_DATASET>
+
+Run:
+
+```bash
+python eval/eval_quality.py --run-dir runs/adult/unimod_mlp_base --name report
 ```
 
-Similarly, the results will be printed out in the terminal and added to ./eval/report_runs/<EXP_NAME>/<NAME_OF_DATASET>/
+The extra fidelity metrics are appended inside the same report directory.
 
 ## Evaluating Data Privacy (DCR score)
-To evalute the privacy metric DCR score, you first need to retrain all the models, as the metric requires an equal split between the training and testing data (our initial splits employ a 90/10 ratio). To retrain with an equal split, run the training command but append `_dcr` to ```<NAME_OF_DATASET>```
-```
-python main.py --dataname <NAME_OF_DATASET>_dcr --mode train
-```
 
-Then, test the models on DCR with the same `_dcr` suffix
-```
-python main.py --dataname <NAME_OF_DATASET>_dcr --mode test --report
-```
-
-
+For DCR, preprocess and train the `_dcr` dataset variant, then run the report test config against that run directory. Since outputs are run-local now, DCR results also stay under the same run directory.
 
 ## Missing Value Imputation with Classifier-free Guidance (CFG)
-Our current experiments only include imputing the target column. However, our implementation, located at ```sample_impute()``` in [unified_ctime_diffusion.py](./tabdiff/models/unified_ctime_diffusion.py), should support imputing multiple columns with different data types.
+
+Our current experiments only include imputing the target column. The imputation path is implemented in `sample_impute()` in [unified_ctime_diffusion.py](./tabdiff/models/unified_ctime_diffusion.py).
 
 ### Training Guidance Model
-In order to enable classifier-free guidance (CFG), you need to first train an unconditional guidance model on the target column by running the training command with the `--y_only` flag
+
+Use a y-only training config, for example:
+
+```bash
+python train.py --config tabdiff/configs/train/unimod_mlp/y_only.yaml --device cuda:0
 ```
-python main.py --dataname <NAME_OF_DATASET> --mode train --y_only
-```
+
+Set `model.y_only_source_run_dir` in that config to the main model run you want to pair with.
 
 ### Sampling Imputed Tables
-With the trained guidance model, you can then impute the missing target column by running the testing command with the `--impute` flag
+
+Set `test.imputation.guidance_run_dir` in `tabdiff/configs/test/impute.yaml`, then run:
+
+```bash
+python test.py --run-dir runs/adult/unimod_mlp_base --config tabdiff/configs/test/impute.yaml --device cuda:0
 ```
-python main.py --dataname <NAME_OF_DATASET> --mode test --impute
+
+Imputation outputs are saved under:
+
+```text
+runs/<dataset>/<run_name>/imputation/<name>/
 ```
-This will, by default, randomly produce 50 imputed tables and save them to ./impute/<NAME_OF_DATASET>/<EXP_NAME>.
 
 ### Evaluating Imputation
-You can then evaluate the imputation quality by running
-```
-python eval_impute.py --dataname <NAME_OF_DATASET>
+
+```bash
+python eval_impute.py --run-dir runs/adult/unimod_mlp_base --name impute
 ```
 
 ## License

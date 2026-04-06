@@ -1,23 +1,22 @@
+import argparse
 import glob
+import json
+import os
+import sys
+
 import numpy as np
 import pandas as pd
-import os 
-import sys
-import json
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sklearn.preprocessing import OneHotEncoder
 from synthcity.metrics import eval_statistical
 from synthcity.plugins.core.dataloader import GenericDataLoader
 
+from tabdiff.config import load_training_manifest
+
 pd.options.mode.chained_assignment = None
 
-import argparse
-
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataname', type=str)
-parser.add_argument('--exp_name', type=str, default=None)
-parser.add_argument('--non_learnable_schedule', action='store_true')
+parser.add_argument('--run-dir', type=str, required=True)
+parser.add_argument('--name', type=str, default='report')
 
 
 args = parser.parse_args()
@@ -108,15 +107,13 @@ def evaluate_quality(real_path, syn_path, info_path):
     return Alpha_Precision_all, Beta_Recall_all
 
 if __name__ == '__main__':
-    exp_name = args.exp_name
-    if exp_name is None:
-        exp_name = "non_learnable_schedule" if args.non_learnable_schedule else "learnable_schedule"
-    dataname = args.dataname
+    manifest = load_training_manifest(args.run_dir)
+    dataname = manifest['run']['dataset']
     data_dir = f'data/{dataname}' 
     info_path = f'{data_dir}/info.json'
-    real_path = f'synthetic/{dataname}/real.csv'
-    
-    sample_dir = f"eval/report_runs/{exp_name}/{dataname}/all_samples"
+    real_path = f'processed_data/{dataname}/real.csv'
+
+    sample_dir = f"{args.run_dir}/report/{args.name}/all_samples"
     sample_paths = glob.glob(os.path.join(sample_dir, "*.csv"))
     print(f"{len(sample_paths )} samples loaded from {sample_dir}")
 

@@ -16,12 +16,11 @@ dependencies:
   - pip
   - pip:
     - pandas
+    - pyyaml
     - scikit-learn
     - scipy
     - icecream
     - xlrd
-    - tomli-w
-    - tomli==2.0.1
     - category_encoders
     - imbalanced-learn
     - kaggle

@@ -2,7 +2,6 @@ import hashlib
 from collections import Counter
 from copy import deepcopy
 from dataclasses import astuple, dataclass, replace
-from importlib.resources import path
 from pathlib import Path
 from typing import Any, Literal, Optional, Union, cast, Tuple, Dict, List
 
@@ -18,8 +17,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
 
-from . import env, util
-from .metrics import calculate_metrics as calculate_metrics_
+from . import util
+from .task_metrics import calculate_metrics as calculate_metrics_
 from .util import TaskType, load_json
 
 ArrayDict = Dict[str, np.ndarray]
@@ -778,3 +777,6 @@ def load_dataset_info(dataset_dir_name: str) -> Dict[str, Any]:
     info['n_features'] = info['n_num_features'] + info['n_cat_features']
     info['path'] = path
     return info
+
+
+get_categories = util.get_categories

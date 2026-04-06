@@ -12,7 +12,7 @@ import json
 
 from copy import deepcopy
 
-from utils_train import update_ema
+from tabdiff.data import update_ema
 
 from tqdm import tqdm
 
@@ -39,7 +39,7 @@ class Trainer:
             self, diffusion, train_iter, dataset, test_dataset,  metrics, logger, 
             lr, weight_decay,
             steps, batch_size, check_val_every,
-            sample_batch_size, model_save_path, result_save_path,
+            sample_batch_size, checkpoint_dir, evaluation_dir,
             num_samples_to_generate=None,
             lr_scheduler='reduce_lr_on_plateau',
             reduce_lr_patience=100, factor=0.9, 
@@ -97,8 +97,8 @@ class Trainer:
         self.check_val_every = check_val_every
         
         self.device = device
-        self.model_save_path = model_save_path
-        self.result_save_path = result_save_path
+        self.checkpoint_dir = checkpoint_dir
+        self.evaluation_dir = evaluation_dir
         self.ckpt_path = ckpt_path
         self.plot_density = plot_density
         if self.ckpt_path is not None:
@@ -286,7 +286,7 @@ class Trainer:
             # Save ckpt base on the best training loss
             if total_loss < best_loss and self.curr_epoch > 4000:
                 best_loss = total_loss
-                to_remove = glob.glob(os.path.join(self.model_save_path, f"best_model_*"))
+                to_remove = glob.glob(os.path.join(self.checkpoint_dir, f"best_model_*"))
                 if to_remove:
                     os.remove(to_remove[0])
                 state_dicts = {
@@ -296,7 +296,7 @@ class Trainer:
                 }
                 if self.diffusion.recognition_model is not None:
                     state_dicts['recognition_model'] = self.diffusion.recognition_model.state_dict()
-                torch.save(state_dicts, os.path.join(self.model_save_path, f'best_model_{np.round(total_loss,4)}_{epoch+1}.pt'))
+                torch.save(state_dicts, os.path.join(self.checkpoint_dir, f'best_model_{np.round(total_loss,4)}_{epoch+1}.pt'))
                 patience = 0
             else:
                 patience += 1   # increment patience if best loss is not surpassed
@@ -316,7 +316,7 @@ class Trainer:
             # Save the best ema ckpt
             if ema_total_loss < best_ema_loss and self.curr_epoch > 4000:
                 best_ema_loss = ema_total_loss
-                to_remove = glob.glob(os.path.join(self.model_save_path, f"best_ema_model_*"))
+                to_remove = glob.glob(os.path.join(self.checkpoint_dir, f"best_ema_model_*"))
                 if to_remove:
                     os.remove(to_remove[0])
                 state_dicts = {
@@ -326,7 +326,7 @@ class Trainer:
                 }
                 if self.ema_recognition is not None:
                     state_dicts['recognition_model'] = self.ema_recognition.state_dict()
-                torch.save(state_dicts, os.path.join(self.model_save_path, f'best_ema_model_{np.round(ema_total_loss,4)}_{epoch+1}.pt'))
+                torch.save(state_dicts, os.path.join(self.checkpoint_dir, f'best_ema_model_{np.round(ema_total_loss,4)}_{epoch+1}.pt'))
             
             # Evaluate Sample Quality
             if (epoch+1) % self.check_val_every == 0:
@@ -337,7 +337,7 @@ class Trainer:
                 }
                 if self.diffusion.recognition_model is not None:
                     state_dicts['recognition_model'] = self.diffusion.recognition_model.state_dict()
-                torch.save(state_dicts, os.path.join(self.model_save_path, f'model_{epoch+1}.pt'))
+                torch.save(state_dicts, os.path.join(self.checkpoint_dir, f'model_{epoch+1}.pt'))
                 
                 print_with_bar(f"Routine Generation Evaluation every {self.check_val_every}, currently at epoch #{epoch+1}, wiht total_loss={total_loss}.")
                 out_metrics, _, _ = self.evaluate_generation(
@@ -347,7 +347,7 @@ class Trainer:
                 print(f"Eval Resutls of the Non-EMA model:\n {out_metrics}")
 
                 # Evaluate the EMA model
-                torch.save(self.ema_model.state_dict(), os.path.join(self.model_save_path, f'ema_model_{epoch+1}.pt'))
+                torch.save(self.ema_model.state_dict(), os.path.join(self.checkpoint_dir, f'ema_model_{epoch+1}.pt'))
                 ema_out_metrics, _, _ = self.evaluate_generation(
                     ema=True, save_metric_details=True, plot_density=self.plot_density
                 )
@@ -370,9 +370,9 @@ class Trainer:
 
         Collects density shape/trend, MLE, and C2ST per run, writes per-run samples under
         ``all_samples/``, and saves ``all_results.csv`` and ``avg_std.csv`` under
-        ``result_save_path``.
+        ``evaluation_dir``.
         """
-        save_dir = self.result_save_path
+        save_dir = self.evaluation_dir
         
         shape_ = []
         trend_ = []
@@ -427,9 +427,9 @@ class Trainer:
         """Run ``num_runs`` generations and aggregate the DCR privacy-style metric.
 
         Saves per-run samples, summary CSVs, and concatenated ``dcr_real`` / ``dcr_test``
-        arrays to ``dcr.csv`` under ``result_save_path``.
+        arrays to ``dcr.csv`` under ``evaluation_dir``.
         """
-        save_dir = self.result_save_path
+        save_dir = self.evaluation_dir
         
         dcr_ = []
         dcr_real_ = []
@@ -488,7 +488,7 @@ class Trainer:
 
         Writes ``samples.csv``, ``all_results.json``, optional metric-detail files from
         ``extras``, and optional ``density_plots.png`` under
-        ``result_save_path / {curr_epoch} / [ema/]``.
+        ``evaluation_dir / {curr_epoch} / [ema/]``.
 
         Args:
             save_metric_details: If True, persist DataFrame/dict extras (e.g. shapes, trends).
@@ -505,7 +505,7 @@ class Trainer:
         syn_df = self.sample_synthetic(num_samples, ema=ema)
         
         # Save the sample
-        save_path = os.path.join(self.result_save_path, str(self.curr_epoch), "ema" if ema else "")
+        save_path = os.path.join(self.evaluation_dir, str(self.curr_epoch), "ema" if ema else "")
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         path = os.path.join(save_path, "samples.csv")

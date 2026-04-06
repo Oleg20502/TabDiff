@@ -6,10 +6,10 @@ The production path in eval/mle/mle.py wraps model.fit() in try/except ValueErro
 which leads to NotFittedError on predict. This script runs the same data preparation and
 fit loop but prints full tracebacks on the first failure.
 
-Run from the repository root (paths synthetic/ and data/ are relative):
+Run from the repository root (paths processed_data/ and data/ are relative):
 
   python scripts/debug_mle_fit.py --samples path/to/samples.csv
-  python scripts/debug_mle_fit.py --samples tabdiff/result/adult/try_1_variational/350/samples.csv --first-only --cpu
+  python scripts/debug_mle_fit.py --samples runs/adult/my_run/test/default/0/samples.csv --first-only --cpu
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def main() -> None:
         required=True,
         help="Path to synthetic samples.csv (same table passed to TabMetrics.evaluate_mle).",
     )
-    parser.add_argument("--dataname", default="adult", help="Dataset name under data/ and synthetic/.")
+    parser.add_argument("--dataname", default="adult", help="Dataset name under data/ and processed_data/.")
     parser.add_argument(
         "--first-only",
         action="store_true",

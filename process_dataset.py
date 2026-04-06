@@ -554,14 +554,14 @@ def process_data(name):
     if has_val:
         val_df.to_csv(f'{save_dir}/val.csv', index = False)
 
-    if not os.path.exists(f'synthetic/{name}'):
-        os.makedirs(f'synthetic/{name}')
-    
-    train_df.to_csv(f'synthetic/{name}/real.csv', index = False)
-    test_df.to_csv(f'synthetic/{name}/test.csv', index = False)
+    if not os.path.exists(f'processed_data/{name}'):
+        os.makedirs(f'processed_data/{name}')
+
+    train_df.to_csv(f'processed_data/{name}/real.csv', index = False)
+    test_df.to_csv(f'processed_data/{name}/test.csv', index = False)
     
     if has_val:
-        val_df.to_csv(f'synthetic/{name}/val.csv', index = False)
+        val_df.to_csv(f'processed_data/{name}/val.csv', index = False)
 
     print('Numerical', X_num_train.shape)
     print('Categorical', X_cat_train.shape)
