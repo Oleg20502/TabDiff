@@ -395,59 +395,6 @@ class RecognitionModel(nn.Module):
         return kl.sum(dim=-1)
 
 
-class LatentPolicy(nn.Module):
-    """How the latent v is drawn for training and generation."""
-
-    def __init__(
-        self,
-        policy_type: Literal["fresh", "prior_only", "consistency"],
-        latent_dim: int,
-        recognition_model: Optional[RecognitionModel] = None,
-    ):
-        super().__init__()
-        self.policy_type = policy_type
-        self.latent_dim = latent_dim
-        self.recognition = recognition_model
-        self._cached_v: Optional[torch.Tensor] = None
-
-    def sample_for_training(
-        self,
-        x_num: torch.Tensor,
-        x_cat: torch.Tensor,
-        x_num_t: torch.Tensor,
-        x_cat_t: torch.Tensor,
-        t: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        B, device = x_num.shape[0], x_num.device
-        if self.policy_type == "prior_only":
-            v = torch.randn(B, self.latent_dim, device=device)
-            kl = torch.zeros(B, device=device)
-        else:
-            if self.recognition is None:
-                raise ValueError("Recognition model required for non-prior policy")
-            mu, logvar = self.recognition(x_num, x_cat, x_num_t, x_cat_t, t)
-            v = self.recognition.sample(mu, logvar)
-            kl = self.recognition.kl_divergence(mu, logvar)
-        return v, kl
-
-    def sample_for_generation(
-        self,
-        batch_size: int,
-        device: torch.device,
-        step_idx: int = 0,
-    ) -> torch.Tensor:
-        if self.policy_type == "consistency":
-            if step_idx == 0 or self._cached_v is None:
-                self._cached_v = torch.randn(
-                    batch_size, self.latent_dim, device=device
-                )
-            return self._cached_v
-        return torch.randn(batch_size, self.latent_dim, device=device)
-
-    def reset_cache(self) -> None:
-        self._cached_v = None
-
-
 class _SinusoidalEmbedding(nn.Module):
     def __init__(self, embed_dim: int, scale: float = 1000.0):
         super().__init__()
