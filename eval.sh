@@ -1,7 +1,8 @@
 #!/bin/bash
+set -e
 
 python main.py \
-    --gpu 3 \
+    --gpu 0 \
     --exp_name try_1 \
     --mode test \
     --dataname adult \

@@ -1,11 +1,10 @@
 #!/bin/bash
 set -e
 
-for N in 2 3 4 5 7 10 14 20 30 40 50 100; do
+for N in 2 5 10 20 30 40 100; do
     python main.py \
         --gpu 0 \
-        --exp_name rec_2_heads_big_kl_0.1_decay_x0_ld_16 \
-        --config tabdiff_configs_variational_3.toml \
+        --exp_name try_1 \
         --mode test \
         --dataname adult \
         --report \

@@ -73,6 +73,14 @@ def _apply_sampling_cli_overrides(raw_config: dict, args) -> None:
         sp['second_order_correction'] = val
         print(f"CLI override: sampler_params.second_order_correction = {val}")
 
+    vcfg = raw_config.setdefault('variational', {})
+    if getattr(args, 'latent_policy', None) is not None and str(args.latent_policy).strip():
+        vcfg['latent_policy'] = str(args.latent_policy).strip()
+        print(f"CLI override: [variational].latent_policy = {vcfg['latent_policy']}")
+    if getattr(args, 'latent_cfg_weight', None) is not None:
+        vcfg['latent_cfg_weight'] = float(args.latent_cfg_weight)
+        print(f"CLI override: [variational].latent_cfg_weight = {vcfg['latent_cfg_weight']}")
+
 
 def main(args):
     device = args.device
@@ -333,6 +341,8 @@ def main(args):
         recognition_model=recognition_model,
         latent_dim=var_cfg.get('latent_dim', 0) if use_variational else 0,
         latent_policy=var_cfg.get('latent_policy', 'consistency') if use_variational else 'consistency',
+        latent_cfg_weight=var_cfg.get('latent_cfg_weight', 1.0) if use_variational else 1.0,
+        p_no_latent=var_cfg.get('p_no_latent', 0.5) if use_variational else 0.5,
         kl_weight=var_cfg.get('kl_weight', 1.0) if use_variational else 1.0,
     )
 

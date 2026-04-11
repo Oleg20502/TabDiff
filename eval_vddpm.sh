@@ -1,8 +1,8 @@
 #!/bin/bash
 
 python main.py \
-    --gpu 2 \
-    --exp_name rec_2_heads_kl_0.1 \
+    --gpu 1 \
+    --exp_name rec_2_heads_kl_0.1_decay_x0 \
     --config tabdiff_configs_variational_3.toml \
     --mode test \
     --dataname adult \

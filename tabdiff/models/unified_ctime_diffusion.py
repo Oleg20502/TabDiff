@@ -35,6 +35,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             recognition_model=None,
             latent_dim=0,
             latent_policy='consistency',
+            latent_cfg_weight=1.0,
+            p_no_latent=0.5,
             kl_weight=1.0,
             **kwargs
         ):
@@ -65,13 +67,18 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
 
         self._denoise_fn = denoise_fn
         self.y_only_model = y_only_model
-        self.num_timesteps = num_timesteps
 
         # Variational (VA-DDPM) components
         self.recognition_model = recognition_model
         self.latent_dim = latent_dim
-        self.latent_policy = latent_policy
         self.kl_weight = kl_weight
+
+        self.latent_policy = latent_policy
+        self.latent_cfg_weight = latent_cfg_weight
+        self.p_no_latent = p_no_latent
+        
+        # Diffusion args
+        self.num_timesteps = num_timesteps
         self.scheduler = scheduler
         self.cat_scheduler = cat_scheduler
         self.noise_dist = noise_dist
@@ -155,6 +162,11 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             v = self.recognition_model.sample(mu, logvar)
             kl_loss = self.recognition_model.kl_divergence(mu, logvar).mean()
 
+            if self.latent_dim > 0 and self.latent_policy == 'latent_cfg':
+                drop_mask = (torch.rand(b, device=device) < self.p_no_latent).float().unsqueeze(1)
+                v_null = torch.zeros_like(v)
+                v = drop_mask * v_null + (1.0 - drop_mask) * v
+
         # Predict orignal data (distribution)
         model_out_num, model_out_cat = self._denoise_fn(   
             x_num_t, x_cat_t_soft,
@@ -220,7 +232,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             )
 
         # Sample latent v once from the prior and reuse across all reverse steps
-        # (consistency mode — matches VA-DDPM's recommended sampling strategy)
+        # (consistency and latent_cfg mode — matches V-DDPM's recommended sampling strategy)
         v = None
         if self.latent_dim > 0:
             v = torch.randn(b, self.latent_dim, device=device)
@@ -228,8 +240,8 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         pbar = tqdm(reversed(range(0, self.num_timesteps)), total=self.num_timesteps)
         pbar.set_description(f"Sampling Progress")
         for i in pbar:
-            # In "fresh" mode a new v is drawn at every step; "consistency"
-            # and default reuse the v sampled above.
+            # In "fresh" mode a new v is drawn at every step; "consistency" and "latent_cfg"
+            # reuse the v sampled above.
             v_step = v
             if self.latent_dim > 0 and self.latent_policy == 'fresh':
                 v_step = torch.randn(b, self.latent_dim, device=device)
@@ -460,6 +472,18 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
             t_hat.squeeze().repeat(b), sigma=sigma_num_hat.unsqueeze(0).repeat(b,1),  # sigma accepts (bs, K_num)
             v=v,
         )
+
+        if self.latent_dim > 0 and self.latent_policy == 'latent_cfg':
+            v_null = torch.zeros_like(v)
+            
+            denoised_uncond, raw_logits_uncond = self._denoise_fn(
+                x_num_hat.float(), x_cat_hat_oh,
+                t_hat.squeeze().repeat(b), sigma=sigma_num_hat.unsqueeze(0).repeat(b,1),  # sigma accepts (bs, K_num)
+                v=v_null,
+            )
+
+            denoised = denoised_uncond + self.latent_cfg_weight * (denoised - denoised_uncond)
+            raw_logits = raw_logits_uncond + self.latent_cfg_weight * (raw_logits - raw_logits_uncond)
         
         # Apply cfg updates, if is in cfg mode
         is_bin_class = len(self.num_mask_idx) == 0
@@ -512,6 +536,18 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
                     t_next.squeeze().repeat(b), sigma=sigma_num_next.unsqueeze(0).repeat(b,1),
                     v=v,
                 )
+
+                if self.latent_dim > 0 and self.latent_policy == 'latent_cfg':
+                    v_null = torch.zeros_like(v)
+                    # Match cond forward (x_num_next, t_next, sigma_num_next); do not use hat-state here.
+                    denoised_uncond, _ = self._denoise_fn(
+                        x_num_next.float(), x_cat_hat_oh,
+                        t_next.squeeze().repeat(b), sigma=sigma_num_next.unsqueeze(0).repeat(b,1),
+                        v=v_null,
+                    )
+
+                    denoised = denoised_uncond + self.latent_cfg_weight * (denoised - denoised_uncond)
+
                 if cfg:
                     if not is_learnable:
                         sigma_cond = sigma_num_next
@@ -547,7 +583,7 @@ class UnifiedCtimeDiffusion(torch.nn.Module):
         device = self.device
         dtype = torch.float32
         
-        # Sample latent v once for the full imputation run (consistency mode)
+        # Sample latent v once for the full imputation run (consistency and latent_cfg mode)
         v = None
         if self.latent_dim > 0:
             v = torch.randn(b, self.latent_dim, device=device)

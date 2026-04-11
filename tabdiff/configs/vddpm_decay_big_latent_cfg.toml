@@ -1,3 +1,5 @@
+# KL decay
+
 [data]
 dequant_dist = "none"
 int_dequant_factor = 0
@@ -66,17 +68,18 @@ batch_size = 10000
 
 [variational]
 use_variational = true
-latent_dim = 64
-latent_policy = "consistency"     # "consistency" | "fresh"
-kl_schedule = "warmup"   # "warmup" | "decay"
-kl_weight = 1.0
-kl_warmup_steps = 1000
-posterior_inputs = "x0_xt_t"   # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
+latent_dim = 8
+latent_policy = "latent_cfg"     # "consistency" | "fresh" | "latent_cfg"
+latent_cfg_weight = 0.5
+p_no_latent = 0.5
+kl_schedule = "decay"   # "warmup" | "decay"
+kl_weight = 0.1
+posterior_inputs = "x0"   # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
 recognition_backbone = "unimod_transformer_heads"   # mlp | unimod_mlp | unimod_transformer_heads
 
-# [variational.kl_schedule_decay]
-# kl_decay_lambda = 0.99913
-# kl_beta_min = 0.0001
+[variational.kl_schedule_decay]
+kl_decay_lambda = 0.99913
+kl_beta_min = 0.0001
 
 [variational.recognition_params]
 hidden_dim = 128

@@ -1,8 +1,8 @@
-#!/bin/bash
+    #!/bin/bash
 
 python main.py \
-    --gpu 3 \
-    --exp_name rec_2_heads_kl_1.0 \
+    --gpu 1 \
+    --exp_name rec_2_heads_big_kl_0.1_decay_x0_ld_8 \
     --dataname adult \
     --mode train \
-    --config tabdiff_configs_variational_2.toml
+    --config tabdiff_configs_variational_decay_big.toml

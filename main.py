@@ -59,6 +59,22 @@ if __name__ == '__main__':
         metavar='{true,false}',
         help='Override diffusion_params.sampler_params.second_order_correction.',
     )
+    samp.add_argument(
+        '--latent_policy',
+        type=str,
+        default=None,
+        choices=['consistency', 'fresh', 'latent_cfg'],
+        metavar='NAME',
+        help='Override [variational].latent_policy during generation (VA-DDPM / latent_dim > 0).',
+    )
+    samp.add_argument(
+        '--latent_cfg_weight',
+        type=float,
+        default=None,
+        metavar='W',
+        help='Override [variational].latent_cfg_weight (latent_cfg policy: blend toward latent-conditioned score).',
+    )
+    
     parser.add_argument('--ckpt_path', type=str, default=None, help='Path to the model checkpoint to be tested')
     parser.add_argument('--report', action='store_true', help="Report testing mode: this mode sequentially runs <num_runs> test runs and report the avg and std")
     parser.add_argument('--num_runs', type=int, default=20, help="Number of runs to be averaged in the report testing mode")

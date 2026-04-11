@@ -68,15 +68,14 @@ batch_size = 10000
 use_variational = true
 latent_dim = 64
 latent_policy = "consistency"     # "consistency" | "fresh"
-kl_schedule = "warmup"   # "warmup" | "decay"
-kl_weight = 1.0
-kl_warmup_steps = 1000
-posterior_inputs = "x0_xt_t"   # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
+kl_schedule = "decay"
+kl_weight = 0.1
+posterior_inputs = "x0"   # "x0" | "x0_t" | "xt_t" | "x0_xt_t"
 recognition_backbone = "unimod_transformer_heads"   # mlp | unimod_mlp | unimod_transformer_heads
 
-# [variational.kl_schedule_decay]
-# kl_decay_lambda = 0.99913
-# kl_beta_min = 0.0001
+[variational.kl_schedule_decay]
+kl_decay_lambda = 0.99913
+kl_beta_min = 0.0001
 
 [variational.recognition_params]
 hidden_dim = 128
@@ -85,10 +84,10 @@ time_embed_dim = 64
 cat_embed_dim = 32
 
 [variational.recognition_unimod_transformer_heads]
-body_num_layers = 4
-mu_head_num_layers = 4
-log_var_head_num_layers = 4
-d_token = 64
+body_num_layers = 2
+mu_head_num_layers = 2
+log_var_head_num_layers = 2
+d_token = 4
 n_head = 1
 factor = 32
 bias = true
