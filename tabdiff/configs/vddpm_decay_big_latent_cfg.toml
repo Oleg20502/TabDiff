@@ -68,7 +68,7 @@ batch_size = 10000
 
 [variational]
 use_variational = true
-latent_dim = 8
+latent_dim = 32
 latent_policy = "latent_cfg"     # "consistency" | "fresh" | "latent_cfg"
 latent_cfg_weight = 0.5
 p_no_latent = 0.5
